@@ -1,1 +1,1 @@
-# IDAClamAV
+# CASC - ClamAV Signature Creator
