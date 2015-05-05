@@ -17,15 +17,12 @@ Installation
 The ClamAV Signature Creator (CASC) is easy to install. Simply copy and paste 
 the Python script (clamav_sig_creator.py) to IDA Pro’s plug-in directory
 
-+===========================================================================+
+
 | Operating System               | IDA Pro Plug-in Path                     |
-+================================|==========================================|
+| ------------------------------ | -----------------------------------------|
 | Windows XP (x86)               | C:\Program Files\IDA 6.7\plugins\        |
-+--------------------------------+------------------------------------------|
 | Windows Vista and higher (x64) | C:\Program Files (x86)\IDA 6.7\plugins\  |
-+--------------------------------+------------------------------------------|
 | Linux                          | <ida_install_dir>/plug-ins               |
-+---------------------------------------------------------------------------|
 
 Support Information
 ===================
@@ -36,28 +33,19 @@ signatures (some exception exist for automatic unpackers built into ClamAV).
 
 Tested on
 ---------
-+===========================================================================+
 | OK | IDA Pro Version | Notes                                              |
-+====+=================+====================================================+
+| -- | --------------- | ---------------------------------------------------|
 | Y  | 6.7             |                                                    |
-+----+-----------------+----------------------------------------------------+
-| Y  | 6.6             | Doesn't support right click option in IDA View or  |
-|    |                 | Strings Windows                                    |
-+----+-----------------+----------------------------------------------------+
+| Y  | 6.6             | Doesn't support right click option in IDA View or Strings Windows |
 | N  | 6.5             | IDA doesn't provide PySide and Qt support          |
-+----+-----------------+----------------------------------------------------+
  
 File Types
 ----------
-+========================================+
-| OK | Architecture  | Type              |
-+====+===============+===================+
-| Y  | Intel x86/x64 | PE, .NET          |                                                    |
-+----+---------------+-------------------+
-| Y  | Intel x86/x64 | ELF               |                                                    |
-+----+---------------+-------------------+
-| Y  | Intel x86/x64 | OSX               |                                                    |
-+----+---------------+-------------------+
+| OK | Architecture  | Type      |
+| -- | ------------- | --------- |
+| Y  | Intel x86/x64 | PE, .NET  |
+| Y  | Intel x86/x64 | ELF       |
+| Y  | Intel x86/x64 | OSX       |
 
 Opening Plug-in
 ===============
