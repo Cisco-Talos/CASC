@@ -34,7 +34,7 @@ signatures (some exception exist for automatic unpackers built into ClamAV).
 Tested on
 ---------
 | OK | IDA Pro Version | Notes                                              |
-| -- | --------------- | ---------------------------------------------------|
+| ----- | --------------- | ---------------------------------------------------|
 | Y  | 6.7             |                                                    |
 | Y  | 6.6             | Doesn't support right click option in IDA View or Strings Windows |
 | N  | 6.5             | IDA doesn't provide PySide and Qt support          |
@@ -42,7 +42,7 @@ Tested on
 File Types
 ----------
 | OK | Architecture  | Type      |
-| -- | ------------- | --------- |
+| ----- | ------------- | --------- |
 | Y  | Intel x86/x64 | PE, .NET  |
 | Y  | Intel x86/x64 | ELF       |
 | Y  | Intel x86/x64 | OSX       |
@@ -142,7 +142,6 @@ There is no support provided with CASC. There is NO warranty; not even for
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 
 If you think you've found a bug, please report it at:
-
     https://github.com/vrtadmin/casc/issues
 
 In order to help us solve your issues as quickly as possible,
