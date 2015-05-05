@@ -6,7 +6,7 @@ The ClamAV Signature Creator (CASC), is an IDA Pro plug-in to aid reverse
 engineers in creating ClamAV NDB and LDB signatures from IDA Pro's Disassembly 
 or Strings view.
 
-CASC should run on any platform that supports IDA Pro 6.7 and higher
+CASC should run on any platform that supports IDA Pro 6.7 and higher.
 Limited functionality is available for IDA Pro 6.6
 
 README with pictures can be found on our wiki:
@@ -27,25 +27,25 @@ the Python script (clamav_sig_creator.py) to IDA Pro’s plug-in directory
 Support Information
 ===================
 ClamAV Signature Creator (CASC) is meant for creating ClamAV signatures on the
-sample as it exist on disk. Sub signatures could be based off unpacked code
+sample as it exists on disk. Sub signatures could be based off unpacked code
 during the sample’s execution, however, ClamAV would not be able to match those
 signatures (some exception exist for automatic unpackers built into ClamAV).
 
 Tested on
 ---------
-| OK | IDA Pro Version | Notes                                              |
+| IDA Pro Version | OK | Notes                                              |
 | ----- | --------------- | ---------------------------------------------------|
-| Y  | 6.7             |                                                    |
-| Y  | 6.6             | Doesn't support right click option in IDA View or Strings Windows |
-| N  | 6.5             | IDA doesn't provide PySide and Qt support          |
+| 6.7 | Y            |                                                    |
+| 6.6 | Y            | Doesn't support right click option in IDA View or Strings Windows |
+| 6.5 | N            | IDA doesn't provide PySide and Qt support          |
  
 File Types
 ----------
-| OK | Architecture  | Type      |
+| Architecture  | Type      | OK |
 | ----- | ------------- | --------- |
-| Y  | Intel x86/x64 | PE, .NET  |
-| Y  | Intel x86/x64 | ELF       |
-| Y  | Intel x86/x64 | OSX       |
+| Intel x86/x64 | PE, .NET  | Y |
+| Intel x86/x64 | ELF       | Y |
+| Intel x86/x64 | OSX       | Y |
 
 Opening Plug-in
 ===============
@@ -55,14 +55,14 @@ with a sample. There are two ways of opening the plug-in.
  -  IDA Pro’s Plug-in Menu (Edit -> Plugins -> ClamAV Signature Creator
  -  Press ` (backtik)
 
-Once the plug-in is open you will be able to view past created sub signatures 
-saved in the IDB, add new misc ClamAV sub signatures, and add sub signatures 
-generated from disassembly selected in the IDB.
+Once the plug-in is opened you will be able to view sub signatures created in 
+the past and saved in the IDB, add new misc ClamAV sub signatures, and add sub 
+signatures generated from disassembly selected in the IDB.
 
 Creating Sub Signatures
 =======================
-Sub signatures can be either created from disassembly viewable from within IDA 
-Pro or manually entering/creating a valid ClamAV sub signature.
+Sub signatures can either be created from disassembly viewable from within IDA 
+Pro or manually from entering/creating a valid ClamAV sub signature.
 
 Insert Misc. Sub Signature
 --------------------------
@@ -85,7 +85,7 @@ cursor in the basic block of interest, then:
      *  Right click and select “Add Assembly to ClamAV Sig Creator…”
 
 The Assembly to Signature window will allow you to insert notes for the sub 
-signature, apply various masking options, and stroll through the 
+signature, apply various masking options, and scroll through the 
 opcodes/assembly associated with that sub signature.
 
 Selecting a masking option will change the opcodes and assembly text if the 
@@ -94,7 +94,7 @@ opcodes (note the assembly area will not update for any customizations made).
 If you uncheck “Customize” then all previously applied masking options will be 
 applied and the customizations will be deleted.
 
-Common Problems
+### Common Problems
 If a masking option is selected but the opcodes and assembly don’t change:
 	ESP Offsets
         This will apply to [esp+offset] operands only
