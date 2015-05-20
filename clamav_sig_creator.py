@@ -380,11 +380,13 @@ class Assembly(object):
         self.custom = None
 
         reg_to_mask = []
+        sp = 'esp' if '64' not in get_file_type_name() else 'rsp'
+        bp = 'ebp' if '64' not in get_file_type_name() else 'rbp'
         if self.mask_options['esp']:
-            reg_to_mask.append('esp')
+            reg_to_mask.append(sp)
 
         if self.mask_options['ebp']:
-            reg_to_mask.append('ebp')
+            reg_to_mask.append(bp)
 
         opcodes = []
         mnemonics = []
