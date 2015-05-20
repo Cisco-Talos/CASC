@@ -203,13 +203,13 @@ def get_block(ea):
     return None
 
 def get_existing_segment_ranges():
-    return map(lambda x: xrange(x.startEA, x.endEA), map(getseg, Segments()))
+    return map(lambda x: [x.startEA, x.endEA], map(getseg, Segments()))
 
 def is_in_sample_segments(ea):
     global valid_address_ranges
     
     for segment_range in valid_address_ranges:
-        if ea in segment_range:
+        if segment_range[0] <= ea < segment_range[1]:
             return True
 
     return False
