@@ -37,15 +37,21 @@
 from idaapi import *
 from idc import *
 
-from PySide import QtGui, QtCore
-from PySide.QtCore import Qt
-
 #   Python Modules
 import collections
 import pickle
 import re
 import csv
 from urllib import quote_plus
+
+try:
+    #   For IDA 6.8 and older using PySide
+    from PySide import QtGui, QtGui as QtWidgets, QtCore
+    from PySide.QtCore import Qt    
+except ImportError:
+    #   For IDA 6.9 and newer using PyQt5
+    from PyQt5 import QtGui, QtWidgets, QtCore
+    from PyQt5.QtCore import Qt
 
 #   Constants
 #-------------------------------------------------------------------------------
@@ -220,13 +226,20 @@ CLAMAV_ICON = load_custom_icon(data=CLAMAV_ICON, format='png')
 
 #   Misc Qt components extended/customized
 #-------------------------------------------------------------------------------
-class OneLineQPlainTextEdit(QtGui.QPlainTextEdit):
+class OneLineQPlainTextEdit(QtWidgets.QPlainTextEdit):
     def __init__(self):
         super(OneLineQPlainTextEdit, self).__init__()
-        self.setLineWrapMode(QtGui.QPlainTextEdit.LineWrapMode.NoWrap)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setSizePolicy(QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Fixed)
+        if IDA_SDK_VERSION <= 680:
+            line_wrap = QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
+            scroll_policy = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        else:
+            line_wrap = QtWidgets.QPlainTextEdit.NoWrap
+            scroll_policy = Qt.ScrollBarAlwaysOff
+
+        self.setLineWrapMode(line_wrap)
+        self.setHorizontalScrollBarPolicy(scroll_policy)
+        self.setVerticalScrollBarPolicy(scroll_policy)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.setTabChangesFocus(True)
 
     def keyPressEvent(self, event):
@@ -380,13 +393,11 @@ class Assembly(object):
         self.custom = None
 
         reg_to_mask = []
-        sp = 'esp' if '64' not in get_file_type_name() else 'rsp'
-        bp = 'ebp' if '64' not in get_file_type_name() else 'rbp'
         if self.mask_options['esp']:
-            reg_to_mask.append(sp)
+            reg_to_mask.append('esp')
 
         if self.mask_options['ebp']:
-            reg_to_mask.append(bp)
+            reg_to_mask.append('ebp')
 
         opcodes = []
         mnemonics = []
@@ -474,11 +485,28 @@ class Assembly(object):
 
                         else:
                             value = '{0:02x}'.format(value)
-                            if not instr_opcodes.endswith(value):
+                            if instr_opcodes.endswith(value):
+                                instr_opcodes = instr_opcodes[:-2] + '??'
+
+                            elif operand_index == 0:
+                                v1 = '{0:02x}'.format(GetOperandValue(ea, 1))
+                                if instr_opcodes.endswith(value + ' ' + v1):
+                                    instr_opcodes = instr_opcodes[:-5] + '?? ' + v1
+
+                                else:
+                                    v1 = '{0:08x}'.format(GetOperandValue(ea, 1))
+                                    v1 = ' '.join([v1[-2:], v1[4:6], v1[2:4], v1[:2]])
+                                    operand_str = value + ' ' + v1
+                                    if instr_opcodes.endswith(operand_str):
+                                        instr_opcodes = instr_opcodes[:-len(operand_str)] + '?? ' + v1
+
+                                    else:
+                                        print 'Unhandled Instruction. Report to developers:'
+                                        print disassembly, instr_opcodes, value
+
+                            else:
                                 print 'Unhandled Instruction. Report to developers:'
                                 print disassembly, instr_opcodes, value
-
-                            instr_opcodes = instr_opcodes[:-2] + '??'
 
                         #   Mask the disassembly
                         if operand_index == 1:
@@ -541,72 +569,77 @@ class AsmSig_Dialog(object):
         Dialog.setWindowTitle('Assembly to Signature')
         Dialog.resize(732, 387)
 
-        sizePolicy = QtGui.QSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(2)
         
+        if IDA_SDK_VERSION <= 680:
+            line_wrap = QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
+        else:
+            line_wrap = QtWidgets.QPlainTextEdit.NoWrap
+
         #   Opcodes GUI Area
-        self.opcode_groupbox = QtGui.QGroupBox()
+        self.opcode_groupbox = QtWidgets.QGroupBox()
         sizePolicy.setHeightForWidth(self.opcode_groupbox.sizePolicy().hasHeightForWidth())
         self.opcode_groupbox.setSizePolicy(sizePolicy)
         self.opcode_groupbox.setFixedWidth(200)
         self.opcode_groupbox.setObjectName('opcode_groupbox')
         self.opcode_groupbox.setTitle('Opcodes')
-        self.opcodes = QtGui.QPlainTextEdit(self.opcode_groupbox)
+        self.opcodes = QtWidgets.QPlainTextEdit(self.opcode_groupbox)
         self.opcodes.setReadOnly(True)
-        self.opcodes.setLineWrapMode(QtGui.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.opcodes.setLineWrapMode(line_wrap)
         font = self.opcodes.document().defaultFont()
         font.setPointSize(12)
         font.setFamily('fixedsys,Liberation Mono')
         self.opcodes.document().setDefaultFont(font)
-        self.vbox_opcodes = QtGui.QVBoxLayout(self.opcode_groupbox)
+        self.vbox_opcodes = QtWidgets.QVBoxLayout(self.opcode_groupbox)
         self.vbox_opcodes.setContentsMargins(1, 1, 1, 1)
         self.vbox_opcodes.addWidget(self.opcodes)
         self.scrollbar_opcodes = self.opcodes.verticalScrollBar()
 
         #   Assembly GUI Area
-        self.asm_groupbox = QtGui.QGroupBox()
+        self.asm_groupbox = QtWidgets.QGroupBox()
         sizePolicy.setHeightForWidth(self.asm_groupbox.sizePolicy().hasHeightForWidth())
         self.asm_groupbox.setSizePolicy(sizePolicy)
         self.asm_groupbox.setObjectName('asm_groupbox')
         self.asm_groupbox.setTitle('Assembly')
-        self.asm = QtGui.QPlainTextEdit(self.asm_groupbox)
+        self.asm = QtWidgets.QPlainTextEdit(self.asm_groupbox)
         self.asm.setReadOnly(True)
-        self.asm.setLineWrapMode(QtGui.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.asm.setLineWrapMode(line_wrap)
         self.asm.document().setDefaultFont(font)
-        self.vbox_asm = QtGui.QVBoxLayout(self.asm_groupbox)
+        self.vbox_asm = QtWidgets.QVBoxLayout(self.asm_groupbox)
         self.vbox_asm.setContentsMargins(1, 1, 1, 1)
         self.vbox_asm.addWidget(self.asm)
 
         #   Masking Options Area
-        self.mask_options = QtGui.QGroupBox()
+        self.mask_options = QtWidgets.QGroupBox()
         sizePolicy.setHeightForWidth(self.mask_options.sizePolicy().hasHeightForWidth())
         self.mask_options.setSizePolicy(sizePolicy)
         self.mask_options.setObjectName('mask_options')
         self.mask_options.setTitle('Mask Options')
 
-        self.vbox_mask = QtGui.QVBoxLayout(self.mask_options)
-        self.esp_checkbox = QtGui.QCheckBox(self.mask_options)
+        self.vbox_mask = QtWidgets.QVBoxLayout(self.mask_options)
+        self.esp_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.esp_checkbox.setObjectName('esp_mask_checkbox')
         self.vbox_mask.addWidget(self.esp_checkbox)
         self.esp_checkbox.setText('ESP Offsets')
 
-        self.ebp_checkbox = QtGui.QCheckBox(self.mask_options)
+        self.ebp_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.ebp_checkbox.setObjectName('ebp_mask_checkbox')
         self.vbox_mask.addWidget(self.ebp_checkbox)
         self.ebp_checkbox.setText('EBP Offsets')
 
-        self.abs_call_checkbox = QtGui.QCheckBox(self.mask_options)
+        self.abs_call_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.abs_call_checkbox.setObjectName('abs_call_mask_checkbox')
         self.vbox_mask.addWidget(self.abs_call_checkbox)
         self.abs_call_checkbox.setText('Absolute Calls')
 
-        self.global_offsets_checkbox = QtGui.QCheckBox(self.mask_options)
+        self.global_offsets_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.global_offsets_checkbox.setObjectName('reg_mask_checkbox')
         self.vbox_mask.addWidget(self.global_offsets_checkbox)
         self.global_offsets_checkbox.setText('Global Offsets')
         
-        self.custom_checkbox = QtGui.QCheckBox(self.mask_options)
+        self.custom_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.custom_checkbox.setObjectName('custom_mask_checkbox')
         self.vbox_mask.addWidget(self.custom_checkbox)
         self.custom_checkbox.setText('Customize')
@@ -618,7 +651,7 @@ class AsmSig_Dialog(object):
         self.vbox_mask.addWidget(self.custom_checkbox)
 
         #   Top Horizontal Layout:  |  Opcodes | Assembly | Masking Options |
-        self.hbox_top_data = QtGui.QHBoxLayout()
+        self.hbox_top_data = QtWidgets.QHBoxLayout()
         self.hbox_top_data.setObjectName('hbox_top_data')
         self.hbox_top_data.addWidget(self.opcode_groupbox)
         self.hbox_top_data.addWidget(self.asm_groupbox)
@@ -626,7 +659,7 @@ class AsmSig_Dialog(object):
         self.hbox_top_data.addWidget(self.mask_options)
 
         #   Analyst's Notes Area
-        self.notes = QtGui.QPlainTextEdit()
+        self.notes = QtWidgets.QPlainTextEdit()
         self.notes.document().setDefaultFont(font)
         self.notes.setTabChangesFocus(True)
         self.notes.setFixedHeight(100)
@@ -634,35 +667,35 @@ class AsmSig_Dialog(object):
         #   Bottom Horizontal Layout: | Error Msg | OK Button | Cancel Button |
         error_font = QtGui.QFont()
         error_font.setBold(True)
-        self.error_msg = QtGui.QLabel('')
+        self.error_msg = QtWidgets.QLabel('')
         self.error_msg.setFont(error_font)
-        self.ok_button = QtGui.QPushButton('OK')
+        self.ok_button = QtWidgets.QPushButton('OK')
         self.ok_button.setFixedWidth(85)
-        self.cancel_button = QtGui.QPushButton('Cancel')
+        self.cancel_button = QtWidgets.QPushButton('Cancel')
         self.cancel_button.setFixedWidth(100)
-        self.hbox_bottom = QtGui.QHBoxLayout()
+        self.hbox_bottom = QtWidgets.QHBoxLayout()
         self.hbox_bottom.addWidget(self.error_msg)
         self.hbox_bottom.addWidget(self.ok_button)
         self.hbox_bottom.addWidget(self.cancel_button)
 
         #   Vertical Layout
-        self.vbox_outer = QtGui.QVBoxLayout(Dialog)
+        self.vbox_outer = QtWidgets.QVBoxLayout(Dialog)
         self.vbox_outer.setObjectName('vbox_outer')
         self.vbox_outer.addLayout(self.hbox_top_data)
-        self.vbox_outer.addWidget(QtGui.QLabel('Notes:'))
+        self.vbox_outer.addWidget(QtWidgets.QLabel('Notes:'))
         self.vbox_outer.addWidget(self.notes)
         self.vbox_outer.addLayout(self.hbox_bottom)
 
         #   Signal Handling
-        QtCore.QObject.connect(self.ok_button, QtCore.SIGNAL('clicked(bool)'), Dialog.ok_button_callback)
-        QtCore.QObject.connect(self.cancel_button, QtCore.SIGNAL('clicked(bool)'), Dialog.reject)
-        QtCore.QObject.connect(self.scrollbar_opcodes, QtCore.SIGNAL("valueChanged(int)"), Dialog.sync_scrolls)
-        QtCore.QObject.connect(self.scrollbar_asm, QtCore.SIGNAL("valueChanged(int)"), Dialog.sync_scrolls)
-        QtCore.QObject.connect(self.esp_checkbox, QtCore.SIGNAL("stateChanged(int)"), Dialog.apply_mask)
-        QtCore.QObject.connect(self.ebp_checkbox, QtCore.SIGNAL("stateChanged(int)"), Dialog.apply_mask)
-        QtCore.QObject.connect(self.abs_call_checkbox, QtCore.SIGNAL("stateChanged(int)"), Dialog.apply_mask)
-        QtCore.QObject.connect(self.global_offsets_checkbox, QtCore.SIGNAL("stateChanged(int)"), Dialog.apply_mask)
-        QtCore.QObject.connect(self.custom_checkbox, QtCore.SIGNAL("stateChanged(int)"), Dialog.toggle_custom_ui)
+        self.ok_button.clicked.connect(Dialog.ok_button_callback)
+        self.cancel_button.clicked.connect(Dialog.reject)
+        self.scrollbar_opcodes.valueChanged.connect(Dialog.sync_scrolls)
+        self.scrollbar_asm.valueChanged.connect(Dialog.sync_scrolls)
+        self.esp_checkbox.stateChanged.connect(Dialog.apply_mask)
+        self.ebp_checkbox.stateChanged.connect(Dialog.apply_mask)
+        self.abs_call_checkbox.stateChanged.connect(Dialog.apply_mask)
+        self.global_offsets_checkbox.stateChanged.connect(Dialog.apply_mask)
+        self.custom_checkbox.stateChanged.connect(Dialog.toggle_custom_ui)
 
 class MiscSig_Dialog(object):
     def setupUi(self, Dialog):
@@ -671,37 +704,37 @@ class MiscSig_Dialog(object):
         Dialog.setWindowTitle('Create Custom ClamAV Sub Signature')
         Dialog.resize(532, 287)
 
-        sizePolicy = QtGui.QSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(2)
 
         #   ClamAV Sub Signature GUI Area
-        self.sig_groupbox = QtGui.QGroupBox()
+        self.sig_groupbox = QtWidgets.QGroupBox()
         sizePolicy.setHeightForWidth(self.sig_groupbox.sizePolicy().hasHeightForWidth())
         self.sig_groupbox.setSizePolicy(sizePolicy)
         self.sig_groupbox.setObjectName('sig_groupbox')
         self.sig_groupbox.setTitle('ClamAV Sub Signature')
-        self.sub_signature = QtGui.QPlainTextEdit(self.sig_groupbox)
+        self.sub_signature = QtWidgets.QPlainTextEdit(self.sig_groupbox)
         font = self.sub_signature.document().defaultFont()
         font.setPointSize(12)
         font.setFamily('fixedsys')
         self.sub_signature.document().setDefaultFont(font)
         self.sub_signature.setTabChangesFocus(True)
-        self.vbox_sub_signature = QtGui.QVBoxLayout(self.sig_groupbox)
+        self.vbox_sub_signature = QtWidgets.QVBoxLayout(self.sig_groupbox)
         self.vbox_sub_signature.setContentsMargins(1, 1, 1, 1)
         self.vbox_sub_signature.addWidget(self.sub_signature)
 
         #   Middle Horizontal Layout:  |  Notes Label | View As Combo box |
-        self.view_as_combobox = QtGui.QComboBox()
+        self.view_as_combobox = QtWidgets.QComboBox()
         self.view_as_combobox.setFixedWidth(75)
-        self.hbox_middle = QtGui.QHBoxLayout()
-        self.hbox_middle.addWidget(QtGui.QLabel('Notes:'))
+        self.hbox_middle = QtWidgets.QHBoxLayout()
+        self.hbox_middle.addWidget(QtWidgets.QLabel('Notes:'))
         self.hbox_middle.addStretch(1)
-        self.hbox_middle.addWidget(QtGui.QLabel('View As: '))
+        self.hbox_middle.addWidget(QtWidgets.QLabel('View As: '))
         self.hbox_middle.addWidget(self.view_as_combobox)
 
         #   Analyst's Notes Area
-        self.notes = QtGui.QPlainTextEdit()
+        self.notes = QtWidgets.QPlainTextEdit()
         self.notes.setTabChangesFocus(True)
         self.notes.setFixedHeight(100)
         self.notes.document().setDefaultFont(font)
@@ -709,19 +742,19 @@ class MiscSig_Dialog(object):
         #   Bottom Horizontal Layout: | Error Msg | OK Button | Cancel Button |
         error_font = QtGui.QFont()
         error_font.setBold(True)
-        self.error_msg = QtGui.QLabel('')
+        self.error_msg = QtWidgets.QLabel('')
         self.error_msg.setFont(error_font)
-        self.ok_button = QtGui.QPushButton('OK')
+        self.ok_button = QtWidgets.QPushButton('OK')
         self.ok_button.setFixedWidth(85)
-        self.cancel_button = QtGui.QPushButton('Cancel')
+        self.cancel_button = QtWidgets.QPushButton('Cancel')
         self.cancel_button.setFixedWidth(100)
-        self.hbox_bottom = QtGui.QHBoxLayout()
+        self.hbox_bottom = QtWidgets.QHBoxLayout()
         self.hbox_bottom.addWidget(self.error_msg)
         self.hbox_bottom.addWidget(self.ok_button)
         self.hbox_bottom.addWidget(self.cancel_button)
 
         #   Vertical Layout
-        self.vbox_outer = QtGui.QVBoxLayout(Dialog)
+        self.vbox_outer = QtWidgets.QVBoxLayout(Dialog)
         self.vbox_outer.setObjectName('vbox_outer')
         self.vbox_outer.addWidget(self.sig_groupbox)
         self.vbox_outer.addLayout(self.hbox_middle)
@@ -729,8 +762,8 @@ class MiscSig_Dialog(object):
         self.vbox_outer.addLayout(self.hbox_bottom)
 
         #   Signal Handling
-        QtCore.QObject.connect(self.ok_button, QtCore.SIGNAL('clicked(bool)'), Dialog.ok_button_callback)
-        QtCore.QObject.connect(self.cancel_button, QtCore.SIGNAL('clicked(bool)'), Dialog.reject)
+        self.ok_button.clicked.connect(Dialog.ok_button_callback)
+        self.cancel_button.clicked.connect(Dialog.reject)
 
 class SubmitSig_Dialog(object):
     def setupUi(self, Dialog):
@@ -740,35 +773,35 @@ class SubmitSig_Dialog(object):
         Dialog.resize(430, 300)
 
         #   Email Body Area
-        self.link = QtGui.QLabel('')
+        self.link = QtWidgets.QLabel('')
         self.link.setTextFormat(Qt.RichText)
         self.link.setTextInteractionFlags(Qt.TextBrowserInteraction)
         self.link.setOpenExternalLinks(True)
-        self.email_body = QtGui.QPlainTextEdit()
+        self.email_body = QtWidgets.QPlainTextEdit()
         self.email_body.setReadOnly(True)
 
         #   Ok Button Area
-        self.button_box = QtGui.QDialogButtonBox()
+        self.button_box = QtWidgets.QDialogButtonBox()
         self.button_box.setOrientation(Qt.Horizontal)
-        self.button_box.setStandardButtons(QtGui.QDialogButtonBox.Ok)
+        self.button_box.setStandardButtons(QtWidgets.QDialogButtonBox.Ok)
         self.button_box.setObjectName('button_box')
-        self.hbox_bottom = QtGui.QHBoxLayout()
+        self.hbox_bottom = QtWidgets.QHBoxLayout()
         self.hbox_bottom.addWidget(self.button_box)
 
         #   Vertical Layout
-        self.vbox_outer = QtGui.QVBoxLayout(Dialog)
+        self.vbox_outer = QtWidgets.QVBoxLayout(Dialog)
         self.vbox_outer.setObjectName('vbox_outer')
         self.vbox_outer.addWidget(self.link)
         self.vbox_outer.addWidget(self.email_body)
         self.vbox_outer.addLayout(self.hbox_bottom)
 
         #   Signal Handling
-        QtCore.QObject.connect(self.button_box, QtCore.SIGNAL('accepted()'), Dialog.accept)
+        self.button_box.accepted.connect(Dialog.accept)
                 
 
 #   Class to interface with Dialog GUIs and the back end data
 #-------------------------------------------------------------------------------
-class CASCDialog(QtGui.QDialog):
+class CASCDialog(QtWidgets.QDialog):
     error_format = '<font color="#ff0000">{0}</font>'
     def __init__(self, parent):
         super(CASCDialog, self).__init__(parent)
@@ -834,8 +867,8 @@ class AsmSignatureDialog(CASCDialog):
                 self.update_opcodes_and_asm()
 
         else:
-            msg_box = QtGui.QMessageBox()
-            msg_box.setIcon(QtGui.QMessageBox.Critical)
+            msg_box = QtWidgets.QMessageBox()
+            msg_box.setIcon(QtWidgets.QMessageBox.Critical)
             msg_box.setWindowTitle('Cannot add Assembly to ClamAV Signature Creator')
             msg_str = ( 'Address range is not within the sample\'s '
                         'segments (0x{0:x} - 0x{1:x})')
@@ -895,13 +928,9 @@ class AsmSignatureDialog(CASCDialog):
 
             if is_custom:
                 #   Disconnect checkbox signal to prevent reentry
-                QtCore.QObject.disconnect(self.ui.custom_checkbox, 
-                                            QtCore.SIGNAL("stateChanged(int)"), 
-                                            self.toggle_custom_ui)
+                self.ui.custom_checkbox.stateChanged.disconnect(self.toggle_custom_ui)
                 self.ui.custom_checkbox.setChecked(True)
-                QtCore.QObject.connect(self.ui.custom_checkbox, 
-                                        QtCore.SIGNAL("stateChanged(int)"), 
-                                        self.toggle_custom_ui)
+                self.ui.custom_checkbox.stateChanged.connect(self.toggle_custom_ui)
 
         else:
             #   Enable selecting other mask options
@@ -1016,7 +1045,7 @@ class MiscSignatureDialog(CASCDialog):
 
         self.ui.sub_signature.setPlainText('\n'.join(opcodes))
 
-class SubmitSigDialog(QtGui.QDialog):
+class SubmitSigDialog(QtWidgets.QDialog):
     def __init__(self, parent, signature, notes):
         super(SubmitSigDialog, self).__init__(parent)
 
@@ -1215,7 +1244,13 @@ class SignatureCreatorFormClass(PluginForm):
         global add_sig_handler_in_menu
 
         self.form = form
-        self.parent = self.FormToPySideWidget(form)
+
+        #   For compatability with IDA 6.8 and lower
+        try:
+            self.parent = self.FormToPySideWidget(form)
+        except AttributeError:
+            self.parent = self.FormToPyQtWidget(form)
+
         self.populate_model()
         self.populate_main_form()
 
@@ -1249,7 +1284,7 @@ class SignatureCreatorFormClass(PluginForm):
         item = self.get_selected_rows()
         if item != None:
             to_copy = u' '.join([unicode(x) for x in item])
-            QtGui.QApplication.clipboard().setText(to_copy)
+            QtWidgets.QApplication.clipboard().setText(to_copy)
 
     def insert_asm_item(self, ctx=None):
         self.Show('ClamAV Signature Creator')
@@ -1260,10 +1295,14 @@ class SignatureCreatorFormClass(PluginForm):
 
     def insert_string_item(self, ctx):
         #   Get IDA's toplevel chooser widget
-        chooser = self.FormToPySideWidget(ctx.form)
+        #   For compatability with IDA 6.8 and lower
+        try:
+            chooser = self.FormToPySideWidget(ctx.form)
+        except AttributeError:
+            chooser = self.FormToPyQtWidget(ctx.form)
 
         #   Get the embedded table view
-        table_view = chooser.findChild(QtGui.QTableView)
+        table_view = chooser.findChild(QtWidgets.QTableView)
         sort_order = table_view.horizontalHeader().sortIndicatorOrder()
         sort_column = table_view.horizontalHeader().sortIndicatorSection()
 
@@ -1305,7 +1344,7 @@ class SignatureCreatorFormClass(PluginForm):
         dialog.show() 
 
     def export_all(self):
-        filename = QtGui.QFileDialog.getSaveFileName(self.parent, 'Save CSV export to...')
+        filename = QtWidgets.QFileDialog.getSaveFileName(self.parent, 'Save CSV export to...')
         if filename == None:
             return
 
@@ -1326,15 +1365,15 @@ class SignatureCreatorFormClass(PluginForm):
         self.sub_signature_model = SubSignatureModel()
 
     def populate_main_form(self):
-        layout = QtGui.QVBoxLayout()
+        layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0,0,0,0)
         layout.setSpacing(0)
 
-        tableview = QtGui.QTableView()
+        tableview = QtWidgets.QTableView()
         tableview.setModel(self.sub_signature_model)
         tableview.setSortingEnabled(False)
-        tableview.setSelectionBehavior(QtGui.QAbstractItemView.SelectRows)
-        tableview.setSelectionMode(QtGui.QAbstractItemView.ExtendedSelection)
+        tableview.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        tableview.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         tableview.setAlternatingRowColors(True)
         tableview.setShowGrid(False)
         hdr = tableview.verticalHeader()
@@ -1346,17 +1385,17 @@ class SignatureCreatorFormClass(PluginForm):
         hdr.setStretchLastSection(True)
 
         #   Context Menu Setup
-        copy_action = QtGui.QAction('&Copy', self.parent)
+        copy_action = QtWidgets.QAction('&Copy', self.parent)
         copy_action.setShortcut('Ctrl+C')
-        insert_action = QtGui.QAction('&Insert', self.parent)
+        insert_action = QtWidgets.QAction('&Insert', self.parent)
         insert_action.setShortcut('Ins')
-        insert_assembly_action = QtGui.QAction('&Insert Assembly', self.parent)
+        insert_assembly_action = QtWidgets.QAction('&Insert Assembly', self.parent)
         insert_assembly_action.setShortcut('Ctrl+Ins')
-        export_action = QtGui.QAction('E&xport all to CSV...', self.parent)
+        export_action = QtWidgets.QAction('E&xport all to CSV...', self.parent)
         export_action.setShortcut('Shift+Ins')
-        delete_action = QtGui.QAction('&Delete', self.parent)
+        delete_action = QtWidgets.QAction('&Delete', self.parent)
         delete_action.setShortcut('Del')
-        separator = QtGui.QAction(self.parent)
+        separator = QtWidgets.QAction(self.parent)
         separator.setSeparator(True)
         tableview.setColumnWidth(0, 75)
         tableview.setColumnWidth(1, 75)
@@ -1371,14 +1410,14 @@ class SignatureCreatorFormClass(PluginForm):
         tableview.addAction(delete_action)
 
         #   Bottom Horizonal Layout: | Sample Name | Create Sig Button |
-        generate_button = QtGui.QPushButton('Create ClamAV Signature')
+        generate_button = QtWidgets.QPushButton('Create ClamAV Signature')
         generate_button.setFixedWidth(160)
         generate_button.clicked.connect(self.generate_signature)
-        sample_name_label = QtGui.QLabel('Name:')
+        sample_name_label = QtWidgets.QLabel('Name:')
         self.sample_name = OneLineQPlainTextEdit()
         self.sample_name.setPlainText('')
         self.sample_name.setFixedHeight(generate_button.sizeHint().height())
-        hboxview = QtGui.QHBoxLayout()
+        hboxview = QtWidgets.QHBoxLayout()
         hboxview.setContentsMargins(1, 1, 1, 1)
         hboxview.addWidget(sample_name_label)
         hboxview.addWidget(self.sample_name)
@@ -1429,8 +1468,8 @@ class SignatureCreatorFormClass(PluginForm):
         ndb_format = '{0}:{1}:*:{2}'
         ldb_format = '{0};Engine:51-255,Target:{1};{2};{3}'
 
-        msg_box = QtGui.QMessageBox()
-        msg_box.setIcon(QtGui.QMessageBox.Critical)
+        msg_box = QtWidgets.QMessageBox()
+        msg_box.setIcon(QtWidgets.QMessageBox.Critical)
         msg_box.setWindowTitle('Unable to create ClamAV Signature')
 
         #   Ensure the signature name is valid
