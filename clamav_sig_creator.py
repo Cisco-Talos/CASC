@@ -1,33 +1,33 @@
 #-------------------------------------------------------------------------------
-#   
+#
 #   Copyright (C) 2015 Cisco Talos Security Intelligence and Research Group
-#   
+#
 #   IDA Pro Plug-in: ClamAV Signature Creator (CASC)
 #   Author: Angel M. Villegas
-#   
+#
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2 as
 #   published by the Free Software Foundation.
-#   
+#
 #   This program is distributed in the hope that it will be useful,
 #   but WITHOUT ANY WARRANTY; without even the implied warranty of
 #   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #   GNU General Public License for more details.
-#   
+#
 #   You should have received a copy of the GNU General Public License
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
-#   
+#
 #   Last revision: April 2015
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
-#   
+#
 #   Installation
 #   ------------
 #   Drag and drop into IDA Pro's plugin folder for IDA Pro 6.6 and higher.
 #   To gain all the features of this plug-in, using IDA Pro 6.7 or higher.
-#   Older versions of IDA Pro may require other Python packages (i.e. PySide, 
+#   Older versions of IDA Pro may require other Python packages (i.e. PySide,
 #   Qt, etc.)
 #
 #-------------------------------------------------------------------------------
@@ -40,6 +40,7 @@ from idc import *
 #   Python Modules
 import collections
 import pickle
+import math
 import re
 import csv
 from urllib import quote_plus
@@ -47,11 +48,12 @@ from urllib import quote_plus
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
-    from PySide.QtCore import Qt    
+    from PySide.QtCore import Qt
 except ImportError:
     #   For IDA 6.9 and newer using PyQt5
     from PyQt5 import QtGui, QtWidgets, QtCore
     from PyQt5.QtCore import Qt
+
 
 #   Constants
 #-------------------------------------------------------------------------------
@@ -62,7 +64,7 @@ OT_BASE_INDEX = 3
 OT_BASE_INDEX_DIS = 4
 OT_IMMEDIATE = 5
 
-OT = {  0 : 'None', 1 : 'General Register', 2 : 'Memory Reference', 
+OT = {  0 : 'None', 1 : 'General Register', 2 : 'Memory Reference',
         3 : 'Base + Index', 4 : 'Base + Index + Displacement', 5 : 'Immediate' }
 
 #   Global Variables
@@ -165,7 +167,7 @@ def verify_clamav_sig(sig):
     pattern = ( '([\da-fA-F\?]{2})|(\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))})|('
                 '\*)|((?:!|)\([\da-fA-F]{2}(?:\|[\da-fA-F]{2})+\))|(\((?:B|L)'
                 '\))')
-    
+
     if None == re.match(sig_format, sig):
         return 'Invalid signature, check ClamAV signature documentation'
 
@@ -213,7 +215,7 @@ def get_existing_segment_ranges():
 
 def is_in_sample_segments(ea):
     global valid_address_ranges
-    
+
     for segment_range in valid_address_ranges:
         if segment_range[0] <= ea < segment_range[1]:
             return True
@@ -274,7 +276,7 @@ try:
             global CLAMAV_ICON, clamav_sig_creator_plugin
 
             if None == clamav_sig_creator_plugin:
-                return 
+                return
 
             if not self.handlers_created:
                 self.init_actions()
@@ -288,26 +290,38 @@ try:
             elif BWN_STRINGS == tform_type:
                 attach_action_to_popup(form, popup, 'clamav:add_string')
 
+            elif BWN_IMPORTS == tform_type:
+                attach_action_to_popup(form, popup, 'clamav:add_import')
+
         def init_actions(self):
             global CLAMAV_ICON, clamav_sig_creator_plugin
 
-            add_sig_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_asm_item) 
-            add_sig_action_desc = action_desc_t('clamav:add_sig', 
-                                                'Add Assembly to ClamAV Sig Creator...', 
-                                                add_sig_handler, 
-                                                'Ctrl+`', 
-                                                'From current selection or selected basic block', 
+            add_sig_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_asm_item)
+            add_sig_action_desc = action_desc_t('clamav:add_sig',
+                                                'Add Assembly to ClamAV Sig Creator...',
+                                                add_sig_handler,
+                                                'Ctrl+`',
+                                                'From current selection or selected basic block',
                                                 CLAMAV_ICON)
             register_action(add_sig_action_desc)
 
             strings_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_string_item)
-            strings_action_desc = action_desc_t('clamav:add_string', 
-                                                'Add string to ClamAV Sig Creator', 
+            strings_action_desc = action_desc_t('clamav:add_string',
+                                                'Add string to ClamAV Sig Creator',
                                                 strings_handler,
                                                 None,
                                                 'Add current string as sub signature',
                                                 CLAMAV_ICON)
             register_action(strings_action_desc)
+
+            import_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_import_item)
+            import_action_desc = action_desc_t('clamav:add_import',
+                                                'Add Import to ClamAV Sig Creator',
+                                                import_handler,
+                                                None,
+                                                'Add current import as sub signature',
+                                                CLAMAV_ICON)
+            register_action(import_action_desc)
 
     hooks = CASCHooks()
     hooks.hook()
@@ -325,7 +339,7 @@ class Assembly(object):
         self.mnemonics = []
         self.start_ea = start_ea
         self.end_ea = end_ea
-        self.mask_options = {'esp' : False, 'ebp' : False, 'abs_calls' : False, 
+        self.mask_options = {'esp' : False, 'ebp' : False, 'abs_calls' : False,
                                 'global_offsets' : False}
         self.custom = None
 
@@ -339,7 +353,7 @@ class Assembly(object):
             return
 
         while ea < end_ea:
-            #   Check if it is in a function, if so it can be decoded without 
+            #   Check if it is in a function, if so it can be decoded without
             #   any issues arising, if not, it should be added as data bytes
             if get_func(ea):
                 instr = DecodeInstruction(ea)
@@ -431,8 +445,8 @@ class Assembly(object):
                     if GetOpType(ea, 1) == OT_IMMEDIATE:
                         operand_index = 1
 
-                    #   Test if the immediate value can map to a segment that is 
-                    #   loaded in the IDB. 
+                    #   Test if the immediate value can map to a segment that is
+                    #   loaded in the IDB.
                     value = GetOperandValue(ea, operand_index)
                     if getseg(value):
                         '{0:08x}'.format(value)
@@ -447,7 +461,7 @@ class Assembly(object):
                             if GetOperandValue(ea, 1) != -1:
                                 disassembly_end = disassembly[disassembly.index(','):]
                             disassembly = mnem + (' ' * (8 - len(mnem))) + '<Global Offset>' + disassembly_end
-                        
+
                 if len(reg_to_mask) != 0:
                     for reg in reg_to_mask:
                         #   Figure which operand has the reg offset to mask
@@ -526,13 +540,13 @@ class Assembly(object):
 
     def mask_opcodes_tuple(self, options):
         if len(options) == 4:
-            self.mask_opcodes({'esp' : options[0], 
-                                'ebp' : options[1], 
-                                'abs_calls' : options[2], 
+            self.mask_opcodes({'esp' : options[0],
+                                'ebp' : options[1],
+                                'abs_calls' : options[2],
                                 'global_offsets' : options[3]})
 
     def get_save_data_tuple(self):
-        mask_tuple = (self.mask_options['esp'], 
+        mask_tuple = (self.mask_options['esp'],
                         self.mask_options['ebp'],
                         self.mask_options['abs_calls'],
                         self.mask_options['global_offsets'])
@@ -558,9 +572,9 @@ class MiscAssembly(Assembly):
 
 
 #   Dialog GUI Logic
-#   
-#   These dialogs should have no direct interactions with IDA, allowing it to 
-#   be pulled out to other applications or replaced in the future. 
+#
+#   These dialogs should have no direct interactions with IDA, allowing it to
+#   be pulled out to other applications or replaced in the future.
 #-------------------------------------------------------------------------------
 class AsmSig_Dialog(object):
     def setupUi(self, Dialog):
@@ -572,7 +586,7 @@ class AsmSig_Dialog(object):
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(2)
-        
+
         if IDA_SDK_VERSION <= 680:
             line_wrap = QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
         else:
@@ -638,12 +652,12 @@ class AsmSig_Dialog(object):
         self.global_offsets_checkbox.setObjectName('reg_mask_checkbox')
         self.vbox_mask.addWidget(self.global_offsets_checkbox)
         self.global_offsets_checkbox.setText('Global Offsets')
-        
+
         self.custom_checkbox = QtWidgets.QCheckBox(self.mask_options)
         self.custom_checkbox.setObjectName('custom_mask_checkbox')
         self.vbox_mask.addWidget(self.custom_checkbox)
         self.custom_checkbox.setText('Customize')
-        
+
         self.vbox_mask.addWidget(self.esp_checkbox)
         self.vbox_mask.addWidget(self.ebp_checkbox)
         self.vbox_mask.addWidget(self.abs_call_checkbox)
@@ -797,7 +811,7 @@ class SubmitSig_Dialog(object):
 
         #   Signal Handling
         self.button_box.accepted.connect(Dialog.accept)
-                
+
 
 #   Class to interface with Dialog GUIs and the back end data
 #-------------------------------------------------------------------------------
@@ -820,14 +834,14 @@ class CASCDialog(QtWidgets.QDialog):
     def success_callback(self):
         if self.callback_fn != None:
             self.callback_fn(self.data, self.ui.notes.toPlainText(), self.index)
-    
+
     def ok_button_callback(self):
         if None != self.data:
             msg = verify_clamav_sig(self.data.opcode_to_signatrue())
             if None != msg:
                 self.ui.error_msg.setText(self.error_format.format(msg))
                 return
-            
+
         self.accept()
 
     def show(self):
@@ -854,16 +868,16 @@ class AsmSignatureDialog(CASCDialog):
             if (BADADDR != SelStart()) and (BADADDR != SelEnd()):
                 start_ea, end_ea = (SelStart(), SelEnd())
 
-            #   Check if user has selected a basic block 
+            #   Check if user has selected a basic block
             elif get_func(ScreenEA()):
                 block = get_block(ScreenEA())
                 if None != block:
                     start_ea = block.startEA
                     end_ea = block.endEA
 
-        if ((BADADDR != start_ea) and is_in_sample_segments(start_ea) and 
+        if ((BADADDR != start_ea) and is_in_sample_segments(start_ea) and
             (BADADDR != end_ea) and is_in_sample_segments(end_ea - 1)):
-                self.data = Assembly(start_ea, end_ea)  
+                self.data = Assembly(start_ea, end_ea)
                 self.update_opcodes_and_asm()
 
         else:
@@ -920,9 +934,6 @@ class AsmSignatureDialog(CASCDialog):
             self.ui.abs_call_checkbox.setEnabled(False)
             self.ui.global_offsets_checkbox.setEnabled(False)
 
-            #   Disable asm qplaintextedit
-            self.ui.asm.setEnabled(False)
-
             #   Enable editing opcodes qplaintextedit
             self.ui.opcodes.setReadOnly(False)
 
@@ -939,13 +950,10 @@ class AsmSignatureDialog(CASCDialog):
             self.ui.abs_call_checkbox.setEnabled(True)
             self.ui.global_offsets_checkbox.setEnabled(True)
 
-            #   Enable  asm qplaintextedit
-            self.ui.asm.setEnabled(True)
-
             #   Disble editing opcodes qplaintextedit
             self.ui.opcodes.setReadOnly(True)
 
-            #   Restore opcodes to match 
+            #   Restore opcodes to match
             self.data.mask_opcodes({})
             self.update_opcodes_and_asm()
 
@@ -1070,7 +1078,7 @@ class SubmitSigDialog(QtWidgets.QDialog):
             notes[i] = 'Sig{0}{1[0]}:\n{1[1]}\n'.format(i, notes[i])
         notes_str = ('\n' + '-' * 40 + '\n').join(notes)
 
-        self.ui.email_body.setPlainText(data.format(GetInputFilePath(), 
+        self.ui.email_body.setPlainText(data.format(GetInputFilePath(),
                                         GetInputMD5(), signature, notes_str))
 
         link_text = ('Send the below to <a href="mailto:community-sigs@lists.'
@@ -1081,14 +1089,16 @@ class SubmitSigDialog(QtWidgets.QDialog):
                                         signature, quote_plus(notes_str))
         link_data = link_text.format('Community Signature Submission', data)
         self.ui.link.setText(link_data)
-        
 
-#   Model class that contains all of the sub signatures contained in this IDB 
-#   file. The model is initialized when the plugin is initialized from an IDC 
+
+#   Model class that contains all of the sub signatures contained in this IDB
+#   file. The model is initialized when the plugin is initialized from an IDC
 #   array stored inside of the IDB file, so sub signatures are persistent across
 #   IDA instances as long as the IDB is saved after changes are made.
 #-------------------------------------------------------------------------------
 class SubSignatureModel(QtCore.QAbstractTableModel):
+    record_size = 1024
+
     def __init__(self, parent = None):
         super(SubSignatureModel, self).__init__(parent)
 
@@ -1102,17 +1112,18 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 
         self.sub_signatures = collections.OrderedDict()
 
-        index = GetFirstIndex(AR_STR, self.sigs_db)
+        index = GetFirstIndex(AR_LONG, self.sigs_db)
         while index != -1:
-            entry = pickle.loads(GetArrayElement(AR_STR, self.sigs_db, index))
+            entry = self.__get_array(index)
+
             self.sub_signatures[index] = entry
             self.next_index = index
             self.index_lookup_table.append(index)
-            index = GetNextIndex(AR_STR, self.sigs_db, index)
+            index = GetNextIndex(AR_LONG, self.sigs_db, index)
 
         self.next_index += 1
         print '[CASCPlugin] Loaded %d sub signatures' % len(self.sub_signatures)
-        
+
     def rowCount(self, index=QtCore.QModelIndex()):
         return len(self.sub_signatures)
 
@@ -1128,6 +1139,8 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             row = self.sub_signatures.values()[index.row()]
+            if row is None:
+                return None
             ((start_ea, end_ea, mask_options, custom), notes) = row
 
             if index.column() == 0:
@@ -1193,7 +1206,8 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.removeRow(row_index)
 
             #   Delete from IDB
-            DelArrayElement(AR_STR, self.sigs_db, index)
+            DelArrayElement(AR_LONG, self.sigs_db, index)
+            DeleteArray('sub_signatures_{}'.format(index))
 
     def add_sub_signature(self, sub_sig_data, notes, index=None):
         element =  (sub_sig_data.get_save_data_tuple(), notes)
@@ -1216,20 +1230,54 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.sub_signatures[index] = element
 
         #   Add to IDB
-        SetArrayString(self.sigs_db, index, pickle.dumps(element))
+        self.__set_array(element[0], notes, index)
+        self.sub_signatures[index] = (element[0], notes)
         self.index_lookup_table.append(index)
 
     def update_sub_signature(self, sub_sig_data, notes, row_index):
-        element =  (sub_sig_data.get_save_data_tuple(), notes)
+        element =  sub_sig_data.get_save_data_tuple()
         index = self.index_lookup_table[row_index]
-        
+
         #   Update in IDB
-        self.sub_signatures[index] = element
-        SetArrayString(self.sigs_db, index, pickle.dumps(element))
-        
+        self.__set_array(element, notes, index)
+        self.sub_signatures[index] = (element, notes)
+
     def get_row_original_data(self, row_index):
         if row_index < len(self.index_lookup_table):
             return self.sub_signatures[self.index_lookup_table[row_index]]
+
+    def __set_array(self, element, notes, index):
+        array_id = 'sub_signatures_{}'.format(index)
+        sig_db = GetArrayId(array_id)
+        if sig_db == -1:
+            sig_db = CreateArray(array_id)
+
+        begin = 0
+        for i in xrange(0, int(math.ceil(float(len(notes)) / self.record_size))):
+            begin = i * self.record_size
+            end = begin + self.record_size
+            SetArrayString(sig_db, i + 1, str(notes[begin:end]))
+
+        if len(notes) == 0:
+            SetArrayString(sig_db, 1, '')
+
+        SetArrayString(sig_db, 0, str(pickle.dumps(element)))
+        SetArrayLong(GetArrayId('sub_signatures'), index, 1)
+
+    def __get_array(self, index):
+        sig_db = GetArrayId('sub_signatures_{}'.format(index))
+        if sig_db == -1:
+            return None
+
+        element = pickle.loads(GetArrayElement(AR_STR, sig_db, 0))
+        notes = ''
+        index = 1
+        while index != -1:
+            notes += GetArrayElement(AR_STR, sig_db, index)
+            index = GetNextIndex(AR_STR, sig_db, index)
+
+        return (element, notes)
+
 
 
 #   Main Plug-in Form Class
@@ -1263,7 +1311,7 @@ class SignatureCreatorFormClass(PluginForm):
             self.grand_parent = self.parent.parent()
             self.grand_parent.setWindowIcon(get_clamav_icon())
         except:
-            #   This is an error in PySide/FromCObject that can cause the 
+            #   This is an error in PySide/FromCObject that can cause the
             #   grand_parent's refcount to be 0 and deleted
             pass
 
@@ -1291,7 +1339,7 @@ class SignatureCreatorFormClass(PluginForm):
         dialog = AsmSignatureDialog(self.parent)
         dialog.registerSuccessCallback(self.sub_signature_model.add_sub_signature)
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
     def insert_string_item(self, ctx):
         #   Get IDA's toplevel chooser widget
@@ -1317,7 +1365,7 @@ class SignatureCreatorFormClass(PluginForm):
             address = model.data(model.index(index, 0), Qt.DisplayRole)
             address = int(address[address.index(':')+1:], 16)
             length = model.data(model.index(index, 1), Qt.DisplayRole)
-            
+
             #   Don't inclue the \0 character
             length = int(length, 16) - 1
             if model.data(model.index(index, 2), Qt.DisplayRole) != 'C':
@@ -1327,9 +1375,42 @@ class SignatureCreatorFormClass(PluginForm):
 
             data[address] = ' '.join(raw)
 
-        sub_signature = map(lambda x: data[x], sorted(data.keys()))
+        sub_signature = [data[x] for x in sorted(data.keys())]
         try:
-            notes = map(lambda x: x.replace(' ', '').decode('hex'), sub_signature)
+            notes = [x.replace(' ', '').decode('hex') for x in sub_signature]
+            notes = map(unicode, notes)
+        except UnicodeDecodeError:
+            pass
+
+        self.insert_custom_item(' * '.join(sub_signature), '\n'.join(notes))
+
+    def insert_import_item(self, ctx):
+        try:
+            chooser = self.FormToPySideWidget(ctx.form)
+        except AttributeError:
+            chooser = self.FormToPyQtWidget(ctx.form)
+
+        #   Get the embedded table view
+        table_view = chooser.findChild(QtWidgets.QTableView)
+        sort_order = table_view.horizontalHeader().sortIndicatorOrder()
+        sort_column = table_view.horizontalHeader().sortIndicatorSection()
+
+        #   Get the table view's data
+        model = table_view.model()
+        sel = ctx.chooser_selection
+
+        data = {}
+        for row_data in table_view.selectionModel().selectedRows():
+            index = row_data.row()
+
+            address = int(model.data(model.index(index, 0), Qt.DisplayRole), 16)
+            name = model.data(model.index(index, 2), Qt.DisplayRole)
+
+            data[address] = ' '.join([x.encode('hex') for x in name]) + ' 00'
+
+        sub_signature = [data[x] for x in sorted(data.keys())]
+        try:
+            notes = [x.replace(' ', '').decode('hex') for x in sub_signature]
             notes = map(unicode, notes)
         except UnicodeDecodeError:
             pass
@@ -1341,7 +1422,7 @@ class SignatureCreatorFormClass(PluginForm):
         dialog = MiscSignatureDialog(self.parent, data=data, notes=notes)
         dialog.registerSuccessCallback(self.sub_signature_model.add_sub_signature)
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
     def export_all(self):
         filename = QtWidgets.QFileDialog.getSaveFileName(self.parent, 'Save CSV export to...')
@@ -1462,7 +1543,7 @@ class SignatureCreatorFormClass(PluginForm):
             dialog.update_opcodes_and_asm()
             dialog.registerSuccessCallback(self.sub_signature_model.update_sub_signature)
             dialog.setModal(True)
-            dialog.show() 
+            dialog.show()
 
     def generate_signature(self):
         ndb_format = '{0}:{1}:*:{2}'
@@ -1489,7 +1570,7 @@ class SignatureCreatorFormClass(PluginForm):
             if None != sub_sig:
                 sub_sigs.append(sub_sig)
 
-        #   Dynamically get the file type 
+        #   Dynamically get the file type
         file_type = get_file_type()
         signature = None
 
@@ -1540,7 +1621,7 @@ class SignatureCreatorFormClass(PluginForm):
         #   Display dialog to user
         dialog = SubmitSigDialog(self.parent, signature, notes)
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
         return signature
 
