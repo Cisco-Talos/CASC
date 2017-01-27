@@ -322,6 +322,8 @@ def verify_clamav_sig(sig):
             #   Check bytes after for valid hex strings
             after_check = 0
             for j in [i+1, i+2]:
+                if j >= len(matches):
+                    continue
                 if re.match('[\da-fA-F]{2}', matches[j]):
                     after_check += 1
 
