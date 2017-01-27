@@ -841,7 +841,7 @@ class IntelParser(CASCParser):
 
         #   Register Masking
         #-----------------------------------------------------------------------
-        regs = {'eax', 'edx', 'ecx', 'edx', 'esi', 'edi'}.intersection(maskings)
+        regs = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'}.intersection(maskings)
         masked_regs = []
         for reg in regs:
             for i in xrange(2, len(current_disassembly)):
