@@ -739,7 +739,7 @@ class IntelParser(CASCParser):
     def mask_instruction(self, ea, maskings):
         instr = self.parse_instruction(ea)
         m_disassembly = ''
-        m_opcodes = [x.encode('hex') for x in [instr['prefix'][0] + instr['opcode'][0]]]
+        m_opcodes = [(instr['prefix'][0] + instr['opcode'][0]).encode('hex')]
 
         default = (instr['disassembly'], ' '.join(instr['bytes']))
 
@@ -761,12 +761,13 @@ class IntelParser(CASCParser):
         #---------------------------
         if (instr['opcode'][1].startswith('j')) and ('jmp' in maskings):
             #   Mask off relative jump offsets
-            if len(m_opcodes[-1]) > 1:
-                m_opcodes +=  [x.encode('hex') for x in m_opcodes[-1].decode('hex')]
-                del m_opcodes[-3]
-            if len(instr['modr/m']) > 1:
-                m_opcodes.append(instr['modr/m'][0].encode('hex'))
-            m_opcodes.append('{{{}}}'.format(len(instr['imm'][0])))
+            if len(m_opcodes[0]) > 1:
+                m_opcodes =  [x.encode('hex') for x in m_opcodes[0].decode('hex')]
+
+            if len(instr['imm'][0]) == 1:
+                m_opcodes.append('??')
+            else:
+                m_opcodes.append('{{{}}}'.format(len(instr['imm'][0])))
             return ('{: <8}<Jump Offset>'.format(instr['opcode'][1]), ' '.join(m_opcodes))
 
         #-----------------------------------------------------------------
@@ -2148,7 +2149,7 @@ class SignatureCreatorFormClass(PluginForm):
         name = self.sample_name.text()
         if None == re.match('^\w+\.\w+\.\w+(|\.Gen)$', name):
             msg_box.setWindowTitle('Invalid ClamAV Signature Name')
-            msg_box.setText(('Could not create ClamAV signature. An invlaid '
+            msg_box.setText(('Could not create ClamAV signature. An invalid '
                             'signature\n name was provided.\n\nName Format:\n'
                             '<Targeted Platform or File Format>.<Category>.'
                             '<Sample Name>\n\nOptional Suffix: .Gen'))
