@@ -789,23 +789,39 @@ class IntelParser(CASCParser):
         #   Global offset instructions
         #   A little complicated to do since it could just be a hard coded value
         #-----------------------------------------------------------------------
-        if ('global' in maskings) and (len(instr['imm']) > 1):
+        if ('global' in maskings) and ((len(instr['imm']) + len(instr['disp'])) > 2):
             #   Assuming the value is a global offset if it exists within a
             #   segment
             #   Since VirtualAlloc uses 0x400000 and many PEs are based at that
             #   address we are going to exclude it
-            offset = int(instr['imm'][1][2:].replace('L', ''), 16)
-            if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
-                imm = current_opcodes[5]
-                if len(imm) == 1:
-                    current_opcodes[5] = '??'
-                else:
-                    current_opcodes[5] = '{{{}}}'.format(len(imm))
+            if (len(instr['imm']) > 1):
+                offset = int(instr['imm'][1][2:].replace('L', ''), 16)
+                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                    imm = current_opcodes[5]
+                    if len(imm) == 1:
+                        current_opcodes[5] = '??'
+                    else:
+                        current_opcodes[5] = '{{{}}}'.format(len(imm))
 
-                for i in xrange(2, len(current_disassembly)):
-                    if (('{:x}'.format(offset) in current_disassembly[i].lower())
-                        or (IDAW.LocByName(current_disassembly[i]) == offset)):
-                        current_disassembly[i] = '<Global Offset>'
+                    for i in xrange(2, len(current_disassembly)):
+                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                            current_disassembly[i] = '<Global Offset>'
+
+            if (len(instr['disp']) > 1):
+                offset = int(instr['disp'][1][2:].replace('L', ''), 16)
+                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                    imm = current_opcodes[4]
+                    if len(imm) == 1:
+                        current_opcodes[4] = '??'
+                    else:
+                        current_opcodes[4] = '{{{}}}'.format(len(imm))
+
+                    for i in xrange(2, len(current_disassembly)):
+                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                            current_disassembly[i] = '<Global Offset>'
+
 
         #   SP and BP displacement masking
         #-----------------------------------------------------------------------
@@ -1026,7 +1042,7 @@ class IntelParser(CASCParser):
             displacement = 0
             if mod == 0b01:
                 displacement = 8
-            elif mod == 0b10:
+            elif (mod == 0b10) or (mod == 0 and rm == 0b101):
                 displacement = 32
 
             #   Find out if there is a SIB byte
