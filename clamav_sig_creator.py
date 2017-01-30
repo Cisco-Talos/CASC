@@ -295,7 +295,7 @@ def verify_clamav_sig(sig):
     sig_format = (  '^('
                         '([\da-fA-F\?]{2})|'
                         '(\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))\})|'
-                        '\*|'
+                        '(\*)|'
                         '((?:!|)\((?:[\da-fA-F\?]{2})+(?:\|(?:[\da-fA-F\?]{2})+)+\))|'
                         '(\((?:B|L|W)\))|'
                         '(\[\d+\-\d+\])'
@@ -305,7 +305,7 @@ def verify_clamav_sig(sig):
     if None == re.match(sig_format, sig):
         return 'Invalid signature, check ClamAV signature documentation'
 
-    matches = map(lambda x: filter(None, x)[0], re.findall(pattern, sig))
+    matches = [filter(None, x)[0] for x in re.findall(pattern, sig)]
     for i in xrange(len(matches)):
         if matches[i].startswith('{'):
             #   Ensure that there are two bytes before and after
@@ -1668,11 +1668,12 @@ class SubmitSigDialog(QtWidgets.QDialog):
                 'Thanks.'
                 )
 
+        breakdown = breakdown.replace('\x00', ' ')
         for i in xrange(len(notes)):
             if (None != notes[i][0]) and (0 < len(notes[i][0])):
                 notes[i] = (' (0x{0[0]:x}, 0x{0[1]:x})'.format(notes[i][0]), notes[i][1])
             notes[i] = 'Sig{0}{1[0]}:\n{1[1]}\n'.format(i, notes[i])
-        notes_str = ('\n' + '-' * 40 + '\n').join(notes)
+        notes_str = ('\n' + '-' * 40 + '\n').join(notes).replace('\x00', ' ')
 
         text = data.format(IDAW.GetInputFilePath(), IDAW.GetInputMD5(),
                             notes_str, signature, breakdown)
@@ -2236,7 +2237,8 @@ class SignatureCreatorFormClass(PluginForm):
             breakdown['decoded'] = '{0[name]}\n{0[description]}\n{0[logical]}\n{0[breakdown]}'.format(breakdown)
             print 'LDB created from custom_opcodes:\n\t{0}\n'.format(signature)
 
-        print breakdown['decoded']
+        #   IDA stops printing when it sees a null byte.
+        print breakdown['decoded'].replace('\x00', ' ')
 
         #   Display dialog to user
         dialog = SubmitSigDialog(self.parent, signature, notes, breakdown['decoded'])
