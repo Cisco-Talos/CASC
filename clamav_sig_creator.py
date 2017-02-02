@@ -56,19 +56,6 @@ except ImportError:
     from PyQt5 import QtGui, QtWidgets, QtCore
     from PyQt5.QtCore import Qt
 
-
-#   Constants
-#-------------------------------------------------------------------------------
-OT_NONE = 0
-OT_REGISTER = 1
-OT_MEMORY_REFERENCE = 2
-OT_BASE_INDEX = 3
-OT_BASE_INDEX_DIS = 4
-OT_IMMEDIATE = 5
-
-OT = {  0 : 'None', 1 : 'General Register', 2 : 'Memory Reference',
-        3 : 'Base + Index', 4 : 'Base + Index + Displacement', 5 : 'Immediate' }
-
 #   Global Variables
 #-------------------------------------------------------------------------------
 b_asm_sig_handler_loaded = True
@@ -1156,10 +1143,6 @@ class Assembly(object):
 
     def opcode_to_signatrue(self):
         return ''.join(self.opcodes).replace(' ', '')
-
-    def instruction_post_processing(self, data):
-        #   TODO
-        pass
 
     def mask_opcodes(self, mask_options):
         self.mask_options = mask_options
