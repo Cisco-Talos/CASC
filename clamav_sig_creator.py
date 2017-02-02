@@ -1,69 +1,60 @@
 #-------------------------------------------------------------------------------
-#   
+#
 #   Copyright (C) 2015 Cisco Talos Security Intelligence and Research Group
-#   
+#
 #   IDA Pro Plug-in: ClamAV Signature Creator (CASC)
 #   Author: Angel M. Villegas
-#   
+#
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License version 2 as
 #   published by the Free Software Foundation.
-#   
+#
 #   This program is distributed in the hope that it will be useful,
 #   but WITHOUT ANY WARRANTY; without even the implied warranty of
 #   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #   GNU General Public License for more details.
-#   
+#
 #   You should have received a copy of the GNU General Public License
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
-#   
+#
 #   Last revision: April 2015
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
-#   
+#
 #   Installation
 #   ------------
 #   Drag and drop into IDA Pro's plugin folder for IDA Pro 6.6 and higher.
 #   To gain all the features of this plug-in, using IDA Pro 6.7 or higher.
-#   Older versions of IDA Pro may require other Python packages (i.e. PySide, 
+#   Older versions of IDA Pro may require other Python packages (i.e. PySide,
 #   Qt, etc.)
 #
 #-------------------------------------------------------------------------------
-
-
-#   Python Modules from IDA Pro 6.6 and higher
-from idaapi import *
-from idc import *
+import idaapi
+import idc
+import idautils
+from idaapi import PluginForm, action_handler_t, UI_Hooks, plugin_t, BADADDR, \
+                    insn_t, execute_ui_requests, IDA_SDK_VERSION, BWN_DISASMS, \
+                    BWN_STRINGS, BWN_IMPORTS, AST_ENABLE_ALWAYS
 
 #   Python Modules
 import collections
+import bisect
 import pickle
+import math
+import types
 import re
 import csv
 from urllib import quote_plus
-
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
-    from PySide.QtCore import Qt    
+    from PySide.QtCore import Qt
 except ImportError:
     #   For IDA 6.9 and newer using PyQt5
     from PyQt5 import QtGui, QtWidgets, QtCore
     from PyQt5.QtCore import Qt
-
-#   Constants
-#-------------------------------------------------------------------------------
-OT_NONE = 0
-OT_REGISTER = 1
-OT_MEMORY_REFERENCE = 2
-OT_BASE_INDEX = 3
-OT_BASE_INDEX_DIS = 4
-OT_IMMEDIATE = 5
-
-OT = {  0 : 'None', 1 : 'General Register', 2 : 'Memory Reference', 
-        3 : 'Base + Index', 4 : 'Base + Index + Displacement', 5 : 'Immediate' }
 
 #   Global Variables
 #-------------------------------------------------------------------------------
@@ -74,12 +65,50 @@ valid_address_ranges = []
 
 CLAMAV_ICON = None
 
+#   IDA Wrapper to ensure thread safety for function calls
+#-------------------------------------------------------------------------------
+class IDAWrapper(object):
+    '''
+    Class to wrap functions that are not thread safe
+    '''
+    def __getattribute__(self, name):
+        default = '[1st] default'
+
+        val = getattr(idaapi, name, default)
+        if val == default:
+            val = getattr(idc, name, default)
+
+        if val == default:
+            val = getattr(idautils, name, default)
+
+        if val == default:
+            msg = 'Unable to find {}'.format(name)
+            print msg
+            return
+
+        if hasattr(val, '__call__'):
+            def call(*args, **kwargs):
+                holder = [None] # need a holder, because 'global' sucks
+
+                def trampoline():
+                    holder[0] = val(*args, **kwargs)
+                    return 1
+
+                idaapi.execute_sync(trampoline, idaapi.MFF_FAST)
+                return holder[0]
+            return call
+
+        else:
+            return val
+
+IDAW = IDAWrapper()
+
 
 #   Misc Helper Functions
 #-------------------------------------------------------------------------------
 def get_file_type():
     #   ClamAV Types: {1 : 'PE', 6 : 'ELF', 9 : 'Mach-O', 0 : 'Any'}
-    file_type = get_file_type_name()
+    file_type = IDAW.get_file_type_name()
     if None == file_type:
         return 0
 
@@ -93,8 +122,99 @@ def get_file_type():
 
     return 0;
 
+def get_type_name(file_type):
+    lookup = {1 : 'PE', 6 : 'ELF', 9 : 'Mach-O', 0 : 'Any'}
+
+    if file_type not in lookup:
+        return 'UNKNOWN'
+
+    return lookup[file_type]
+
+def convert_to_ascii(data):
+    if data is None:
+        return data
+
+    if len(data) != 1:
+        return data
+
+    data = data[0].replace(' ', '')
+    converted = ''
+    not_complete = True
+    while not_complete:
+        if re.match('^([a-fA-F\d]{2})', data):
+            converted += data[:2].decode('hex')
+            data = data[2:]
+
+        elif data.startswith('{'):
+            match = re.match('^\{(?:(\d+)|(\d+)\-|\-(\d+)|(\d+)\-(\d))\}', data)
+            matches =  match.groups()
+            if matches[0] is not None:
+                length = '=={}'.format(matches[0])
+            elif matches[1] is not None:
+                length = '>={}'.format(matches[1])
+            elif matches[2] is not None:
+                length = '<={}'.format(matches[2])
+            elif None not in matches [3:]:
+                length = '>={}&&<={}'.format(matches[3], matches[4])
+
+            end = data.index('}') + 1
+            converted += '{{WILDCARD_ANY_STRING(LENGTH{})}}'.format(length)
+            data = data[end:]
+
+        elif re.match('^\[(\d+)\-(\d+)\]', data):
+            matches = re.match('^\[(\d+)\-(\d+)\]').groups()
+            end = data.index(']') + 1
+            converted += '{{WILDCARD_ANY_STRING(LENGTH>={0[0]}&&<={0[1]})}}'.format(matches)
+            data = data[end:]
+
+        elif data.startswith('*'):
+            converted += '{WILDCARD_ANY_STRING}'
+            data = data[1:]
+
+        elif data.startswith('??'):
+            converted += '{WILDCARD_IGNORE}'
+            data = data[2:]
+
+        elif re.match('^(?:([a-fA-F\d])\?|\?([a-fA-F\d]))', data):
+            matches = re.match('^(?:([a-fA-F\d])\?|\?([a-fA-F\d]))').groups()
+            temp = '{{WILDCARD_NIBBLE_{}:{}}}'
+            if matches[0] is not None:
+                temp = temp.format('HIGH', hex(matches[0]))
+            else:
+                temp = temp.format('LOW', hex(matches[1]))
+            converted += temp
+            data = data[2:]
+
+        elif data.startswith('('):
+            end = data.index(')') + 1
+            alternates = convert_to_ascii([data[1:end-1]])
+
+            converted += '{{STRING_ALTERNATIVE:{}}}'.format(alternates)
+            data = data[end:]
+
+        else:
+            if data[0] not in ['|']:
+                print '[CASC] Error: idk how to handle {}'.format(data[0])
+            converted += data[0]
+            data = data[1:]
+
+        if len(data) == 0:
+            not_complete = False
+
+    return converted
+
 def is_32bit():
-    return '86' in get_file_type_name()
+    info = IDAW.get_inf_structure()
+    if info.is_64bit():
+        return False
+    elif info.is_32bit():
+        return True
+
+    return False
+
+def is_64bit():
+    info = IDAW.get_inf_structure()
+    return info.is_64bit()
 
 def get_clamav_icon(return_hex=False, return_pixmap=False):
     clamav_icon = ( '89504E470D0A1A0A0000000D494844520000001A0000001A08060000'
@@ -159,29 +279,45 @@ def get_clamav_icon(return_hex=False, return_pixmap=False):
     return QtGui.QIcon(pixmap)
 
 def verify_clamav_sig(sig):
-    sig_format = (  '^(([\da-fA-F\?]{2})|(\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+)'
-                    ')})|\*|((?:!|)\([\da-fA-F]{2}(?:\|[\da-fA-F]{2})+\))|(\('
-                    '(?:B|L)\)))+$')
-    pattern = ( '([\da-fA-F\?]{2})|(\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))})|('
-                '\*)|((?:!|)\([\da-fA-F]{2}(?:\|[\da-fA-F]{2})+\))|(\((?:B|L)'
-                '\))')
-    
+    sig_format = (  '^('
+                        '([\da-fA-F\?]{2})|'
+                        '(\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))\})|'
+                        '(\*)|'
+                        '((?:!|)\((?:[\da-fA-F\?]{2})+(?:\|(?:[\da-fA-F\?]{2})+)+\))|'
+                        '(\((?:B|L|W)\))|'
+                        '(\[\d+\-\d+\])'
+                    ')+$')
+    pattern = sig_format[2:-3]
+
     if None == re.match(sig_format, sig):
         return 'Invalid signature, check ClamAV signature documentation'
 
-    matches = map(lambda x: filter(None, x)[0], re.findall(pattern, sig))
+    matches = [filter(None, x)[0] for x in re.findall(pattern, sig)]
     for i in xrange(len(matches)):
         if matches[i].startswith('{'):
             #   Ensure that there are two bytes before and after
-            if (i-2 < 0) or (i+2 >= len(matches)):
+            if (i-2 < 0) and  (i+2 >= len(matches)):
                 return ('Invalid signature, two hex bytes are not before and '
                         'after {*} expression')
 
-            #   Check bytes before and after for valid hex strings
-            for j in [i-2, i-1, i+1, i+2]:
-                if None == re.match('[\da-fA-F]{2}', matches[j]):
-                    return ('Invalid signatrue, hex byte at {0} ({1}) is not '
-                            'an actual byte value'.format(j, matches[j]))
+            #   Check bytes before for valid hex strings
+            before_check = 0
+            for j in  list({max(i-2, 0), max(i-1, 0)}):
+                if re.match('[\da-fA-F]{2}', matches[j]):
+                    before_check += 1
+
+            #   Check bytes after for valid hex strings
+            after_check = 0
+            for j in [i+1, i+2]:
+                if j >= len(matches):
+                    continue
+                if re.match('[\da-fA-F]{2}', matches[j]):
+                    after_check += 1
+
+            if 2 not in [before_check, after_check]:
+                return ('Invalid signatrue, hex byte at {0} ({1}) is not '
+                        'preceeded or followed by two fixed byte '
+                        'values'.format(i, matches[i]))
 
         #   Look {n-m} extension
         values = re.match('\{(\d+)\-(\d+)\}', matches[i])
@@ -195,11 +331,11 @@ def get_block(ea):
     '''
     Given a virtual address, this function will return a block object or None
     '''
-    ea_func = get_func(ea)
+    ea_func = IDAW.get_func(ea)
 
     #   Ensure ea is in a function
     if ea_func:
-        fc = FlowChart(ea_func)
+        fc = IDAW.FlowChart(ea_func)
 
         for block in fc:
             #   Check address selected is in the block's range
@@ -209,44 +345,63 @@ def get_block(ea):
     return None
 
 def get_existing_segment_ranges():
-    return map(lambda x: [x.startEA, x.endEA], map(getseg, Segments()))
+    return map(lambda x: [x.startEA, x.endEA], map(IDAW.getseg, IDAW.Segments()))
 
 def is_in_sample_segments(ea):
     global valid_address_ranges
-    
+
     for segment_range in valid_address_ranges:
         if segment_range[0] <= ea < segment_range[1]:
             return True
 
     return False
 
+def get_architecture():
+    info = IDAW.get_inf_structure()
+    proc = info.procName.lower()
+    if 'metapc' == proc:
+        proc = 'intel'
+
+    bits = 16
+    if info.is_64bit():
+        bits = 64
+    elif info.is_32bit():
+        bits = 32
+
+    return (proc, bits)
+
+def get_parser():
+    proc, bits = get_architecture()
+    mapping = {'intel' : IntelParser}
+
+    if proc in mapping:
+        parser = mapping[proc]
+        if type(parser) != types.TypeType:
+            #   For future use if mapping includes more of a breakdown
+            return CASCParser(bits)
+
+        return parser(bits)
+
+    return CASCParser(bits)
+
+def get_gui():
+    proc, bits = get_architecture()
+    mapping = {'intel' : IntelMask}
+
+    if proc in mapping:
+        gui = mapping[proc]
+        if type(gui) != types.TypeType:
+            #   For future use if mapping includes more of a breakdown
+            return CASCMask(bits)
+
+        return gui(bits)
+
+    return CASCMask(bits)
+
+
 #   Create ClamAV icon
 CLAMAV_ICON = get_clamav_icon(True).decode('hex')
-CLAMAV_ICON = load_custom_icon(data=CLAMAV_ICON, format='png')
-
-#   Misc Qt components extended/customized
-#-------------------------------------------------------------------------------
-class OneLineQPlainTextEdit(QtWidgets.QPlainTextEdit):
-    def __init__(self):
-        super(OneLineQPlainTextEdit, self).__init__()
-        if IDA_SDK_VERSION <= 680:
-            line_wrap = QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
-            scroll_policy = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        else:
-            line_wrap = QtWidgets.QPlainTextEdit.NoWrap
-            scroll_policy = Qt.ScrollBarAlwaysOff
-
-        self.setLineWrapMode(line_wrap)
-        self.setHorizontalScrollBarPolicy(scroll_policy)
-        self.setVerticalScrollBarPolicy(scroll_policy)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.setTabChangesFocus(True)
-
-    def keyPressEvent(self, event):
-        if event.key() in [Qt.Key_Return, Qt.Key_Enter]:
-            event.ignore()
-        else:
-            super(OneLineQPlainTextEdit, self).keyPressEvent(event)
+CLAMAV_ICON = IDAW.load_custom_icon(data=CLAMAV_ICON, format='png')
 
 
 #   Action Handler Classes - Supported for IDA Pro 6.7 and higher
@@ -274,40 +429,52 @@ try:
             global CLAMAV_ICON, clamav_sig_creator_plugin
 
             if None == clamav_sig_creator_plugin:
-                return 
+                return
 
             if not self.handlers_created:
                 self.init_actions()
                 self.handlers_created = True
 
             #   Apply the right action to the popup menu
-            tform_type = get_tform_type(form)
+            tform_type = IDAW.get_tform_type(form)
             if BWN_DISASMS == tform_type:
-                attach_action_to_popup(form, popup, 'clamav:add_sig')
+                IDAW.attach_action_to_popup(form, popup, 'clamav:add_sig')
 
             elif BWN_STRINGS == tform_type:
-                attach_action_to_popup(form, popup, 'clamav:add_string')
+                IDAW.attach_action_to_popup(form, popup, 'clamav:add_string')
+
+            elif BWN_IMPORTS == tform_type:
+                IDAW.attach_action_to_popup(form, popup, 'clamav:add_import')
 
         def init_actions(self):
             global CLAMAV_ICON, clamav_sig_creator_plugin
 
-            add_sig_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_asm_item) 
-            add_sig_action_desc = action_desc_t('clamav:add_sig', 
-                                                'Add Assembly to ClamAV Sig Creator...', 
-                                                add_sig_handler, 
-                                                'Ctrl+`', 
-                                                'From current selection or selected basic block', 
+            add_sig_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_asm_item)
+            add_sig_action_desc = IDAW.action_desc_t('clamav:add_sig',
+                                                'Add Assembly to ClamAV Sig Creator...',
+                                                add_sig_handler,
+                                                'Ctrl+`',
+                                                'From current selection or selected basic block',
                                                 CLAMAV_ICON)
-            register_action(add_sig_action_desc)
+            IDAW.register_action(add_sig_action_desc)
 
             strings_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_string_item)
-            strings_action_desc = action_desc_t('clamav:add_string', 
-                                                'Add string to ClamAV Sig Creator', 
+            strings_action_desc = IDAW.action_desc_t('clamav:add_string',
+                                                'Add string to ClamAV Sig Creator',
                                                 strings_handler,
                                                 None,
                                                 'Add current string as sub signature',
                                                 CLAMAV_ICON)
-            register_action(strings_action_desc)
+            IDAW.register_action(strings_action_desc)
+
+            import_handler = CASCActionHandler(clamav_sig_creator_plugin.insert_import_item)
+            import_action_desc = IDAW.action_desc_t('clamav:add_import',
+                                                'Add Import to ClamAV Sig Creator',
+                                                import_handler,
+                                                None,
+                                                'Add current import as sub signature',
+                                                CLAMAV_ICON)
+            IDAW.register_action(import_action_desc)
 
     hooks = CASCHooks()
     hooks.hook()
@@ -315,6 +482,600 @@ try:
 except NameError:
     b_asm_sig_handler_loaded = False
 
+#
+#   Masking GUI component
+#-------------------------------------------------------------------------------
+class CASCMask(object):
+    def __init__(self, bits):
+        self.bits = bits
+        self.gui = QtWidgets.QWidget()
+
+    def get_masking(self):
+        return []
+
+    def set_masking(self):
+        pass
+
+    def register_signals(self, apply_mask_func, custom_ui_func):
+        pass
+
+    def disable(self):
+        pass
+
+    def enable(self):
+        pass
+
+    def set_custom(self, checked):
+        pass
+
+    def custom_checked(self):
+        pass
+
+class IntelMask(CASCMask):
+    def __init__(self, bits):
+        super(IntelMask, self).__init__(bits)
+
+        self.maskings = [('ESP Offsets', 'sp_mask'),
+                        ('EBP Offsets', 'bp_mask'),
+                        ('Call Offsets', 'call_mask'),
+                        ('Jump Offsets', 'jmp_mask'),
+                        ('Global Offsets', 'global_mask'),
+                        ('Customize', 'custom_mask')]
+        self.registers = [  ('EAX', 'eax_mask'), ('EBX', 'ebx_mask'),
+                            ('ECX', 'ecx_mask'), ('EDX', 'edx_mask'),
+                            ('ESI', 'esi_mask'), ('EDI', 'edi_mask')]
+        if not is_32bit():
+            self.registers = []
+
+        self.gui = self._init_gui()
+
+    def _init_gui(self):
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy.setHorizontalStretch(0)
+        sizePolicy.setVerticalStretch(2)
+
+        mask_options = QtWidgets.QGroupBox()
+        sizePolicy.setHeightForWidth(mask_options.sizePolicy().hasHeightForWidth())
+        mask_options.setSizePolicy(sizePolicy)
+        mask_options.setObjectName('mask_options')
+        mask_options.setTitle('Mask Options')
+
+        vbox_mask = QtWidgets.QVBoxLayout(mask_options)
+        for text, name in self.maskings:
+            checkbox = QtWidgets.QCheckBox(text, mask_options)
+            checkbox.setObjectName(name)
+            vbox_mask.addWidget(checkbox)
+
+        vbox_mask.addStretch()
+
+        if self.registers:
+            #   Original Opcodes GUI Area
+            reg_groupbox = QtWidgets.QGroupBox()
+            sizePolicy.setHeightForWidth(reg_groupbox.sizePolicy().hasHeightForWidth())
+            reg_groupbox.setSizePolicy(sizePolicy)
+            reg_groupbox.setObjectName('reg_groupbox')
+            reg_groupbox.setTitle('Mask Registers')
+            hbox_reg = QtWidgets.QHBoxLayout(reg_groupbox)
+            vbox_reg = QtWidgets.QVBoxLayout()
+            vbox_reg.setContentsMargins(1, 1, 1, 1)
+            hbox_reg.addLayout(vbox_reg)
+            vbox_mask.addWidget(reg_groupbox)
+
+            for text, name in self.registers:
+                if self.registers.index((text, name)) == (len(self.registers)/2):
+                    vbox_reg = QtWidgets.QVBoxLayout()
+                    vbox_reg.setContentsMargins(1, 1, 1, 1)
+                    hbox_reg.addLayout(vbox_reg)
+
+                checkbox = QtWidgets.QCheckBox(text, mask_options)
+                checkbox.setObjectName(name)
+                vbox_reg.addWidget(checkbox)
+
+        return mask_options
+
+    def get_masking(self):
+        checked = [x for x in self.get_non_custom_masks() if x.isChecked()]
+        return [x.objectName().replace('_mask', '') for x in checked]
+
+    def set_masking(self, maskings):
+        checkboxes = [x[1] for x in self.maskings] + [x[1] for x in self.registers]
+        for x in [self.gui.findChild(QtWidgets.QCheckBox, x) for x in checkboxes]:
+            name = x.objectName().replace('_mask', '')
+            if name in maskings:
+                x.setChecked(True)
+
+    def register_signals(self, apply_mask_func, custom_ui_func):
+        checkboxes = [x[1] for x in self.maskings] + [x[1] for x in self.registers]
+        objs = [self.gui.findChild(QtWidgets.QCheckBox, x) for x in checkboxes]
+
+        for checkbox in objs:
+            name = checkbox.objectName()
+            if name.startswith('custom'):
+                checkbox.stateChanged.connect(custom_ui_func)
+            else:
+                checkbox.stateChanged.connect(apply_mask_func)
+
+    def disable(self):
+        [x.setEnabled(False) for x in self.get_non_custom_masks()]
+
+    def enable(self):
+        [x.setEnabled(True) for x in self.get_non_custom_masks()]
+
+    def get_non_custom_masks(self):
+        checkboxes = [x[1] for x in self.maskings if not x[1].startswith('custom')]
+        checkboxes += [x[1] for x in self.registers]
+        return [self.gui.findChild(QtWidgets.QCheckBox, x) for x in checkboxes]
+
+    def custom_checked(self):
+        return self.get_custom_checkbox().isChecked()
+
+    def set_custom(self, checked):
+        checkbox = self.get_custom_checkbox()
+
+        checkbox.blockSignals(True)
+        checkbox.setChecked(checked)
+        checkbox.blockSignals(False)
+
+    def get_custom_checkbox(self):
+        custom = [x[1] for x in self.maskings if x[1].startswith('custom')][0]
+        return self.gui.findChild(QtWidgets.QCheckBox, custom)
+
+#
+#   Architecture parsers
+#-------------------------------------------------------------------------------
+class CASCParser(object):
+    def __init__(self, bits):
+        self.bits = bits
+
+    def get_gui_layout(self):
+        mask_options = QtWidgets.QGroupBox()
+        sizePolicy.setHeightForWidth(mask_options.sizePolicy().hasHeightForWidth())
+        mask_options.setSizePolicy(sizePolicy)
+        mask_options.setObjectName('mask_options')
+        mask_options.setTitle('Mask Options')
+        vbox_mask = QtWidgets.QVBoxLayout(mask_options)
+
+        raise mask_options
+
+    def set_masking(self):
+        pass
+
+    def register_gui_signals(self, gui_obj, apply_mask_func, custom_ui_func):
+        pass
+
+    def setEnable(self, gui_obj, is_enabled=False):
+        pass
+
+class IntelParser(CASCParser):
+    prefixes = '^([\xf0\xf3\xf2\x2e\x36\x3e\x26\x64\x65\x66\x67]{1,4})'
+    prefixes_x64 = '^((?:[\xf0\xf3\xf2\x2e\x36\x3e\x26\x64\x65\x66\x67]|\x0f(?:\x38|\x3a){0,1}){1,4})'
+
+    prefix_required_modrm = [6, 8, 9, 0x0b, 0x0d] + range(0x14, 0x18) + \
+                            [0x1f, 0x2c, 0x2d] + \
+                            [0x40, 0x60, 0x61, 0x68, 0x6a] + \
+                            range(0x6c, 0x70) + range(0x71, 0x77) + \
+                            range(0x7c, 0x80) + \
+                            [0xa3, 0xa4, 0xa5] + range(0xab, 0xb0) + \
+                            [0xc2, 0xc3, 0xc8, 0xd4, 0xd5, 0xd7] + \
+                            range(0xe0, 0xf0) + [0xf4] + range(0xf8, 0xfe)
+    noprefix_nomodrm = [1] + range(0x50, 0x62) + range(0x90, 0x9a) + \
+                        range(0xb0, 0xc0)
+
+    two_opcodes = { 1 : range(0xc8, 0xd2) + [0xd5, 0xd6, 0xf8, 0xf9],
+                    0xc6 : [0xf8], 0xc7 : [0xf8], 0xd4 : [0xa0], 0xd5 : [0xa0],
+                    0xd8 : [0xc0, 0xc8, 0xd0, 0xd1, 0xd8, 0xd9, 0xe0, 0xe8,
+                            0xf0, 0xf8],
+                    0xd9 : [0xc0, 0xc8, 0xc9, 0xd0, 0xe0, 0xe1, 0xe4, 0xe5,
+                            0xe8, 0xe9, 0xea, 0xec, 0xed, 0xee, 0xf0, 0xf1,
+                            0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf9, 0xfa,
+                            0xfb, 0xfc, 0xfd, 0xfe, 0xff],
+                    0xda : [0xc0, 0xc8, 0xd0, 0xd8, 0xe9],
+                    0xdb : [0xc0, 0xc8, 0xd0, 0xd8, 0xe2, 0xe3, 0xe8, 0xf0],
+                    0xdc : [0xc0, 0xc8, 0xe0, 0xe8, 0xf0, 0xf8],
+                    0xdd : [0xc0, 0xd0, 0xd8, 0xe0, 0xe1, 0xe8, 0xe9],
+                    0xde : [0xc0, 0xc1, 0xc8, 0xc9, 0xd9, 0xe0, 0xe1, 0xe8,
+                            0xe9, 0xf0, 0xf1, 0xf8, 0xf9],
+                    0xdf : [0xe0, 0xe8, 0xf0],
+                    0x0f : range(0x80,0x90) + [0xc8],
+                    0xfa : [0xae]}
+
+    three_opcodes = {0x9b : ['\xd3\xe3', '\xdb\xe2', '\xdf\xe0']}
+    two_opcodes_modrm = {0x38 : range(0, 0x0c) + \
+                                [0x10, 0x14, 0x15, 0x17, 0x1c, 0x1d, 0x1e] + \
+                                range(0x20, 0x26) + [0x28, 0x29, 0x2a, 0x2b] + \
+                                range(0x30, 0x42) + [0x82] + \
+                                range(0xdb, 0xe0) + [0xf0, 0xf1],
+                        0x3a : range(0x08, 0x10) + range(0x14, 0x18) + \
+                                range(0x20, 0x23) + range(0x40, 0x45) + \
+                                range(0x60, 0x64) + [0xdf],
+                        0x9b : [0xd9, 0xdd],
+                        0x0f : range(0, 4) + [0x06, 0x0d] + range(0x10, 0x19) + \
+                                range(0x1f, 0x24) + [0x2a, 0x2b, 0x2d, 0x2e, 0x2f] + \
+                                range(0x40, 0x50) + range(0x51, 0x6c) + \
+                                range(0x70, 0x77) + [0x7f, 0xa3, 0xa4, 0xa5] + \
+                                range(0xab, 0xb8) + range(0xba, 0xc8) + \
+                                range(0xd2, 0xf0) + range(0xf1, 0xf5) + \
+                                range(0xf6, 0xff)}
+
+    no_modrm = [0x04, 0x05, 0x07, 0x0c, 0x0e, 0x1c, 0x1d, 0x1e, 0x24, 0x25,
+                0x27, 0x34, 0x35, 0x37, 0x3c, 0x3d, 0x3f, 0x77, 0x78, 0x79,
+                0x7a, 0x7b, 0x82] + range(0x91, 0xa3) + [0xa6, 0xa7, 0xa8,
+                0xa9, 0xaa, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf, 0xf5]
+
+    reg_variants = {'eax' : re.compile('([^a-zA-Z_@]|^)(e{0,1}a(?:x|h|l))'),
+                    'ebx' : re.compile('([^a-zA-Z_@]|^)(e{0,1}b(?:x|h|l))'),
+                    'ecx' : re.compile('([^a-zA-Z_@]|^)(e{0,1}c(?:x|h|l))'),
+                    'edx' : re.compile('([^a-zA-Z_@]|^)(e{0,1}d(?:x|h|l))'),
+                    'esi' : re.compile('([^a-zA-Z_@]|^)(e{0,1}sil{0,1})'),
+                    'edi' : re.compile('([^a-zA-Z_@]|^)(e{0,1}dil{0,1})')}
+
+    reg_exceptions = [(0x0f, 0xc8), 0x48, 0x40, 0xb0, 0xb8, 0x58, 0x50, 0x90]
+
+    bin2reg = { 0b000 : ['eax', 'ax', 'al', 'mmo', 'xmmo'],
+                0b001 : ['ecx', 'cx', 'cl', 'mm1', 'xmm1'],
+                0b010 : ['edx', 'dx', 'dl', 'mm2', 'xmm2'],
+                0b011 : ['ebx', 'bx', 'bl', 'mm3', 'xmm3'],
+                0b100 : ['ah', 'mm4', 'xmm4'],
+                0b101 : ['ch', 'mm5', 'xmm5'],
+                0b110 : ['esi', 'si', 'dh', 'mm6', 'xmm6'],
+                0b111 : ['edi', 'di', 'bh', 'mm7', 'xmm7']}
+
+    def __init__(self, bits):
+        super(IntelParser, self).__init__(bits)
+
+    def mask_instruction(self, ea, maskings):
+        instr = self.parse_instruction(ea)
+        m_disassembly = ''
+        m_opcodes = [(instr['prefix'][0] + instr['opcode'][0]).encode('hex')]
+
+        default = (instr['disassembly'], ' '.join(instr['bytes']))
+
+        #   Call instructions
+        #--------------------
+        if (instr['opcode'][1] == 'call') and ('call' in maskings):
+            #   Mask off absolute/relative call offsets
+            masked_imm = '{{{}}}'.format(len(instr['imm'][0]))
+            if len(instr['modr/m']) > 1:
+                #   Absolute call
+                m_opcodes += [instr['modr/m'][0].encode('hex'), masked_imm]
+                return ('call    <Absolute Offset>', ' '.join(m_opcodes))
+
+            #   Relative call
+            m_opcodes.append(masked_imm)
+            return ('call    <Relative Offset>', ' '.join(m_opcodes))
+
+        #   Jcc and JMP instructions
+        #---------------------------
+        if (instr['opcode'][1].startswith('j')) and ('jmp' in maskings):
+            #   Mask off relative jump offsets
+            if len(m_opcodes[0]) > 1:
+                m_opcodes =  [x.encode('hex') for x in m_opcodes[0].decode('hex')]
+
+            if len(instr['imm'][0]) == 1:
+                m_opcodes.append('??')
+            else:
+                m_opcodes.append('{{{}}}'.format(len(instr['imm'][0])))
+            return ('{: <8}<Jump Offset>'.format(instr['opcode'][1]), ' '.join(m_opcodes))
+
+        #-----------------------------------------------------------------
+        #   Below multiple maskings can be applied to the same instruction
+        #-----------------------------------------------------------------
+
+        #   Prepare structure for masking operands and details.
+        opcodes_order = ['prefix', 'opcode', 'modr/m', 'sib', 'disp', 'imm']
+        current_opcodes = [instr[x][0] for x in opcodes_order]
+
+        mnem = IDAW.GetMnem(ea)
+        operands = default[0][default[0].index(mnem)+len(mnem):].split(',')
+        operands = [x.lstrip() for x in operands]
+        prefix = ''
+        if len(instr['prefix']) > 1:
+            prefix = instr['prefix'][1]
+        current_disassembly = [prefix, instr['opcode'][1]] + operands
+
+        #   Global offset instructions
+        #   A little complicated to do since it could just be a hard coded value
+        #-----------------------------------------------------------------------
+        if ('global' in maskings) and ((len(instr['imm']) + len(instr['disp'])) > 2):
+            #   Assuming the value is a global offset if it exists within a
+            #   segment
+            #   Since VirtualAlloc uses 0x400000 and many PEs are based at that
+            #   address we are going to exclude it
+            if (len(instr['imm']) > 1):
+                offset = int(instr['imm'][1][2:].replace('L', ''), 16)
+                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                    imm = current_opcodes[5]
+                    if len(imm) == 1:
+                        current_opcodes[5] = '??'
+                    else:
+                        current_opcodes[5] = '{{{}}}'.format(len(imm))
+
+                    for i in xrange(2, len(current_disassembly)):
+                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                            current_disassembly[i] = '<Global Offset>'
+
+            if (len(instr['disp']) > 1):
+                offset = int(instr['disp'][1][2:].replace('L', ''), 16)
+                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                    imm = current_opcodes[4]
+                    if len(imm) == 1:
+                        current_opcodes[4] = '??'
+                    else:
+                        current_opcodes[4] = '{{{}}}'.format(len(imm))
+
+                    for i in xrange(2, len(current_disassembly)):
+                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                            current_disassembly[i] = '<Global Offset>'
+
+
+        #   SP and BP displacement masking
+        #-----------------------------------------------------------------------
+        if len(instr['disp']) > 0:
+            if len(instr['modr/m']) > 1:
+                #   Check the displacement value is from an esp offset
+                modrm = instr['modr/m'][1]
+                if 0b01 <= modrm['mod'] <= 0b10:
+                    mask_disp = ''
+                    #   EBP offset
+                    if ('bp' in maskings) and (modrm['rm'] == 0b101):
+                        mask_disp = 'bp'
+
+                    #   ESP offset
+                    if (('sp' in maskings) and (modrm['rm'] == 0b100)
+                        and (len(instr['sib']) > 1)):
+                        sib = instr['sib'][1]
+                        if sib['base'] == 0b100:
+                            mask_disp = 'sp'
+
+                    if mask_disp:
+                        for i in xrange(2, len(current_disassembly)):
+                            x = current_disassembly[i]
+                            mask_re = '{}+[^\]]+'.format(mask_disp)
+                            value = '{0}+<{1} Offset>'.format(mask_disp, mask_disp.upper())
+                            current_disassembly[i] = self.mask_operand(x, mask_re, value)
+
+                        disp = current_opcodes[4]
+                        if len(disp) == 1:
+                            current_opcodes[4] = '??'
+                        else:
+                            current_opcodes[4] = '{{{}}}'.format(len(disp))
+
+        #   Register Masking
+        #-----------------------------------------------------------------------
+        regs = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'}.intersection(maskings)
+        masked_regs = []
+        for reg in regs:
+            for i in xrange(2, len(current_disassembly)):
+                operand = current_disassembly[i]
+                if self.reg_variants[reg].search(operand):
+                    current_disassembly[i] = self.reg_variants[reg].sub('\\1<Reg Masked>', operand)
+                    masked_reg = self.reg_variants[reg].search(operand).groups()[1]
+
+                    opcode_masked = False
+                    current_modrm = current_opcodes[2]
+                    original_modrm = instr['modr/m'][0]
+                    if len(original_modrm) == 1:
+                        modrm = instr['modr/m'][1]
+
+                        minreg = (modrm['mod'] << 6) | 0 | modrm['rm']
+                        minrm = (modrm['mod'] << 6) | (modrm['reg'] << 3) | 0
+
+                        if (operand == masked_reg) and (masked_reg in self.bin2reg[modrm['reg']]):
+                            opcode_masked = True
+                            if len(current_modrm) == 1:
+                                values = [minreg + (x << 3) for x in range(8)]
+                                current_opcodes[2] = ['{:02x}'.format(x) for x in values]
+                            else:
+                                current_opcodes[2] = list(set(['{:01x}?'.format(x) for x in range((modrm['mod'] << 2), (modrm['mod'] << 2) + 4)]))
+
+                        elif (modrm['rm'] == 0b100) and (modrm['mod'] in range(0, 3)):
+                            #   The instruction requires the SIB bytes
+                            if len(instr['sib'][0]) == 1:
+                                sib = instr['sib'][1]
+
+                                minindex = (sib['ss'] << 6) | 0 | sib['base']
+                                minbase = (sib['ss'] << 6) | (sib['index'] << 3) | 0
+                                current_sib = current_opcodes[3]
+                                if (sib['index'] != 0b100) and (masked_reg in self.bin2reg[sib['index']]):
+                                    opcode_masked = True
+                                    if len(current_sib) == 1:
+                                        values = [minindex + (x << 3) for x in range(8)]
+                                        current_opcodes[3] = ['{:02x}'.format(x) for x in values]
+                                    else:
+                                        current_opcodes[3] = list(set(['{:01x}?'.format(x) for x in range((sib['ss'] << 2), (sib['ss'] << 2) + 4)]))
+
+                                elif masked_reg in self.bin2reg[sib['base']]:
+                                    opcode_masked = True
+                                    if len(current_sib) == 1:
+                                        values = [minbase + x for x in range(8)]
+                                        current_opcodes[3] = ['{:02x}'.format(x) for x in values]
+                                    else:
+                                        current_opcodes[3] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[3]])))
+
+                        elif (not (modrm['rm'] == 0b100 and modrm['mod'] == 0b11)
+                                and (masked_reg in self.bin2reg[modrm['rm']])):
+                            opcode_masked = True
+                            if len(current_modrm) == 1:
+                                values = [minrm + x for x in range(8)]
+                                current_opcodes[2] = ['{:02x}'.format(x) for x in values]
+                            else:
+                                current_opcodes[2] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[2]])))
+
+                    else:
+                        binreg = [x for x in self.bin2reg if masked_reg in self.bin2reg[x]][0]
+
+                        #   Values are part of the operand
+                        opcode = ord(instr['opcode'][0][-1]) - binreg
+                        if ((opcode in self.reg_exceptions)
+                            or ((len(instr['opcode'][0]) == 2)
+                                and (opcode == self.reg_exceptions[0][1])
+                                and (ord(instr['opcode'][0][0]) == self.reg_exceptions[0][0]))):
+                            opcode_masked = True
+                            values = range(opcode, opcode + 8)
+                            if len(instr['opcode'][0]) == 2:
+                                current_opcodes[1] = '{0:02x}({1})'.format(ord(instr['opcode'][0][0]),
+                                                                            '|'.join(['{:02x}'.format(x) for x in values]))
+                            else:
+                                current_opcodes[1] = ['{:02x}'.format(x) for x in values]
+
+                    if not opcode_masked:
+                        #   Opcode couldn't be masked, revert masked disassembly
+                        current_disassembly[i] = operand
+
+
+
+        #   Register masking exceptions
+        #   Instructions that leavage a base opcode value and increment it to
+        #   get the right register
+        #-----------------------------------------------------------------------
+
+        #   Customize
+        #   Clean up opcodes and disassembly for display to user
+        current_disassembly = [x for x in current_disassembly if x]
+        current_disassembly = '{0: <8}{1}'.format(current_disassembly[0], ', '.join(current_disassembly[1:]))
+        opcodes = []
+        for x in [x for x in current_opcodes if x]:
+            if type(x) == list:
+                opcodes += ['({})'.format('|'.join(x))]
+            elif not re.search('(\?\?|\{.+\}|\[.+\])', x):
+                opcodes += [y.encode('hex') for y in x]
+            else:
+                opcodes.append(x)
+
+        return (current_disassembly, ' '.join(opcodes))
+
+    def parse_instruction(self, ea):
+        size = IDAW.DecodeInstruction(ea).size
+        original = ['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)]
+        disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
+        if ';' in disassembly:
+            disassembly = disassembly[:disassembly.index(';')].rstrip()
+        instr = {   'address': ea,
+                    'bytes'  : original,
+                    'disassembly' : disassembly,
+                    'prefix' : ['', ],
+                    'opcode' : ['', ],
+                    'modr/m' : ['', ],
+                    'sib'    : ['', ],
+                    'disp'   : ['', ],
+                    'imm'    : ['', ],
+        }
+        data = ''.join(original).decode('hex')
+
+        #   Look for prefix
+        prefix = ['', ]
+        pre_match = re.match(self.prefixes, data)
+        prefix_str = disassembly[0:disassembly.index(IDAW.GetMnem(ea))]
+        if pre_match:
+            prefix = [pre_match.groups()[0], prefix_str]
+
+        elif is_64bit():
+            pre_match = re.match(self.prefixes_x64, data)
+            if pre_match:
+                prefix = [pre_match.groups()[0], prefix_str]
+
+        instr['prefix'] = prefix
+        data = data[len(prefix[0]):]
+
+        #   Look for opcodes
+        opcodes = [data[0], IDAW.GetMnem(ea)]
+        opcode = ord(opcodes[0])
+        if ((opcode in self.two_opcodes)
+            and (ord(data[1]) in self.two_opcodes[opcode])):
+            opcodes[0] = data[0:2]
+        elif ((opcode in self.three_opcodes)
+            and (data[1:3] in self.three_opcodes[opcode])):
+            opcodes[0] = data[0:3]
+        elif ((opcode in self.two_opcodes_modrm)
+            and (ord(data[1]) in self.two_opcodes_modrm[opcode])):
+            opcodes[0] = data[0:2]
+
+        instr['opcode'] = opcodes
+        data = data[len(opcodes[0]):]
+
+        #   Look for Mod R/M byte
+        modrm = ['', ]
+        getmodrm = False
+        if (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) > 0):
+            getmodrm = True
+        elif (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) == 0):
+            getmodrm = False
+        elif (opcodes[0][0] == '\x01') and (len(opcodes[0]) == 1):
+            getmodrm = True
+        elif (ord(opcodes[0][0]) in self.noprefix_nomodrm) and (len(prefix[0]) == 0):
+            getmodrm = False
+        elif (len(opcodes[0]) == 1) and (ord(opcodes[0]) not in self.no_modrm):
+            getmodrm = True
+        elif ((len(opcodes[0]) > 1)
+            and (ord(opcodes[0][0]) in self.two_opcodes_modrm)
+            and (ord(opcodes[0][1]) in self.two_opcodes_modrm[ord(opcodes[0][0])])):
+            getmodrm = True
+
+        if getmodrm:
+            modrm[0] = data[0]
+            data = data[1:]
+        instr['modr/m'] = modrm
+        if len(modrm[0]) == 1:
+            value = ord(modrm[0])
+            mod = (value >> 6) & 3
+            reg = (value >> 3) & 7  #operand 1
+            rm = value & 7          #operand 2
+            instr['modr/m'].append({'mod':mod, 'reg':reg, 'rm':rm})
+
+            #   Find out the Displacement size if it has one
+            #   Done for x86, 16bit would require some additional code
+            displacement = 0
+            if mod == 0b01:
+                displacement = 8
+            elif (mod == 0b10) or (mod == 0 and rm == 0b101):
+                displacement = 32
+
+            #   Find out if there is a SIB byte
+            if (mod < 0b11) and (rm == 0b100):
+                sib = data[0]
+                value = ord(sib)
+                ss = (value >> 6) & 3       #scale index: 2**ss
+                index = (value >> 3) & 7    #register scaled: e?x * (2**ss)
+                base = value & 7            #
+                instr['sib'] = [sib, {'ss':ss, 'index':index, 'base':base}]
+                data = data[1:]
+
+            #   Done for x86, 16bit would require some additional code
+            if displacement > 0:
+                disp = data[:displacement/8]
+                disp_str = '<I'
+                if displacement == 8:
+                    disp_str = 'B'
+                instr['disp'] = [disp, hex(struct.unpack(disp_str, disp)[0])]
+                data = data[displacement/8:]
+
+        imm_map = {2 : '<H', 4 : '<I'}
+        if len(data) > 0:
+            if len(data) in imm_map:
+                value = hex(struct.unpack(imm_map[len(data)], data)[0])
+                instr['imm'] = [data, ]
+            elif len(data) == 1:
+                value = hex(ord(data))
+            else:
+                print '[Error]: immediate value is not 1, 2, or 4 bytes'
+
+            instr['imm'] = [data, value]
+
+        return instr
+
+    def to_hex(self, x):
+        if len(x) > 1:
+            if ('{' in x and '}' in x) or (x == '??'):
+                return x
+        return x.encode('hex')
+
+    def mask_operand(self, operand, to_mask, mask_value):
+        if re.search(operand, to_mask):
+            return re.sub(to_mask, mask_value, operand)
+        else:
+            return operand
 
 #   Disassembly and Opcodes Classes
 #-------------------------------------------------------------------------------
@@ -325,12 +1086,12 @@ class Assembly(object):
         self.mnemonics = []
         self.start_ea = start_ea
         self.end_ea = end_ea
-        self.mask_options = {'esp' : False, 'ebp' : False, 'abs_calls' : False, 
-                                'global_offsets' : False}
+        self.mask_options = []
         self.custom = None
+        self.parser = get_parser()
 
         self.starts_in_function = False
-        if get_func(start_ea):
+        if IDAW.get_func(start_ea):
             self.starts_in_function = True
 
         ea = start_ea
@@ -339,24 +1100,24 @@ class Assembly(object):
             return
 
         while ea < end_ea:
-            #   Check if it is in a function, if so it can be decoded without 
+            #   Check if it is in a function, if so it can be decoded without
             #   any issues arising, if not, it should be added as data bytes
-            if get_func(ea):
-                instr = DecodeInstruction(ea)
+            if IDAW.get_func(ea):
+                instr = IDAW.DecodeInstruction(ea)
                 self.original_data.append(instr)
 
-                disassembly = tag_remove(generate_disasm_line(ea, 1))
+                disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
                 if ';' in disassembly:
                     disassembly = disassembly[:disassembly.index(';')].rstrip()
 
                 self.mnemonics.append(disassembly)
-                data = ['{0:02x}'.format(Byte(ea + i)) for i in xrange(instr.size)]
+                data = ['{0:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(instr.size)]
                 self.opcodes.append(' '.join(data))
 
                 ea += instr.size
 
             else:
-                data_byte = Byte(ea)
+                data_byte = IDAW.Byte(ea)
                 self.original_data.append(data_byte)
                 self.mnemonics.append('db {0:02x}h'.format(data_byte))
                 self.opcodes.append('{0:02x}'.format(data_byte))
@@ -364,6 +1125,9 @@ class Assembly(object):
 
         self.original_opcodes = self.opcodes
         self.original_mnemonics = self.mnemonics
+
+    def get_original_opcode_list(self):
+        return self.original_opcodes
 
     def get_opcode_list(self):
         return self.opcodes
@@ -380,25 +1144,12 @@ class Assembly(object):
     def opcode_to_signatrue(self):
         return ''.join(self.opcodes).replace(' ', '')
 
-    def mask_opcodes(self, mask_options, is_custom=False):
-        self.mask_options.update(mask_options)
-        mask_esp = self.mask_options['esp']
-        mask_ebp = self.mask_options['ebp']
-        mask_abs = self.mask_options['abs_calls']
-        mask_global = self.mask_options['global_offsets']
-
-        if is_custom:
+    def mask_opcodes(self, mask_options):
+        self.mask_options = mask_options
+        if 'custom' in mask_options:
             return
 
         self.custom = None
-
-        reg_to_mask = []
-        if self.mask_options['esp']:
-            reg_to_mask.append('esp')
-
-        if self.mask_options['ebp']:
-            reg_to_mask.append('ebp')
-
         opcodes = []
         mnemonics = []
 
@@ -408,116 +1159,12 @@ class Assembly(object):
                 opcodes.append('{0:02x}'.format(instr))
 
             else:
-                #   The data is an instruction
-                ea = instr.ea
-                mnem = GetMnem(ea)
-
-                #   Create original (non-masked) version of the data
-                disassembly = tag_remove(generate_disasm_line(ea, 1))
-                data = ['{0:02x}'.format(Byte(ea + i)) for i in xrange(instr.size)]
-                instr_opcodes = ' '.join(data)
-
-                if ';' in disassembly:
-                    disassembly = disassembly[:disassembly.index(';')].rstrip()
-
-                if mask_abs and (mnem == 'call') and (GetOpType(ea, 0) == OT_MEMORY_REFERENCE):
-                    mnemonics.append('call    <Absolute Call>')
-                    opcodes.append(instr_opcodes[:-11] + '{4}')
-                    #   No more masking operations can be done on this instructionn
+                data = self.parser.mask_instruction(instr.ea, mask_options)
+                if not data:
+                    print '[CASC] Error: mask_instruction returned None'
                     continue
 
-                elif mask_global and ((GetOpType(ea, 0) == OT_IMMEDIATE) or (GetOpType(ea, 1) == OT_IMMEDIATE)):
-                    operand_index = 0
-                    if GetOpType(ea, 1) == OT_IMMEDIATE:
-                        operand_index = 1
-
-                    #   Test if the immediate value can map to a segment that is 
-                    #   loaded in the IDB. 
-                    value = GetOperandValue(ea, operand_index)
-                    if getseg(value):
-                        '{0:08x}'.format(value)
-                        value = '{0:08x}'.format(value)
-                        value = ' '.join([value[-2:], value[4:6], value[2:4], value[:2]])
-                        instr_opcodes = instr_opcodes.replace(value, '{4}')
-
-                        if operand_index == 1:
-                            disassembly = disassembly[:disassembly.index(',')] + ', <Global Offset>'
-                        else:
-                            disassembly_end = ''
-                            if GetOperandValue(ea, 1) != -1:
-                                disassembly_end = disassembly[disassembly.index(','):]
-                            disassembly = mnem + (' ' * (8 - len(mnem))) + '<Global Offset>' + disassembly_end
-                        
-                if len(reg_to_mask) != 0:
-                    for reg in reg_to_mask:
-                        #   Figure which operand has the reg offset to mask
-                        operand_index = 0
-                        if ',' in disassembly:
-                            if '[' + reg in disassembly[disassembly.index(','):]:
-                                operand_index = 1
-
-                        if ('[' + reg not in disassembly) or (GetOpType(ea, operand_index) not in [OT_BASE_INDEX_DIS, OT_MEMORY_REFERENCE]):
-                            continue
-
-                        value = GetOperandValue(ea, operand_index)
-                        if value > 0x7f or (GetOpType(ea, operand_index) == OT_MEMORY_REFERENCE):
-                            value = '{0:08x}'.format(value)
-                            value = ' '.join([value[-2:], value[4:6], value[2:4], value[:2]])
-                            masked_value = '{4}'
-                            if value in instr_opcodes:
-                                instr_opcodes = instr_opcodes.replace(value, '{4}')
-
-                            elif 0x80000000 & GetOperandValue(ea, operand_index):
-                                value = '{0:02x}'.format(0xFF & GetOperandValue(ea, operand_index))
-                                if 1 == operand_index:
-                                    if instr_opcodes.endswith(value):
-                                        instr_opcodes = instr_opcodes.replace(value, '??')
-                                    else:
-                                        print 'Unhandled Instruction. Report to developers:'
-                                        print disassembly, instr_opcodes, value
-
-                                else:
-                                    instr_opcodes = instr_opcodes[:4] + instr_opcodes[4:].replace(value, '??')
-
-                            else:
-                                print 'Unhandled Instruction. Report to developers:'
-                                print disassembly, instr_opcodes, value
-
-                        else:
-                            value = '{0:02x}'.format(value)
-                            if instr_opcodes.endswith(value):
-                                instr_opcodes = instr_opcodes[:-2] + '??'
-
-                            elif operand_index == 0:
-                                v1 = '{0:02x}'.format(GetOperandValue(ea, 1))
-                                if instr_opcodes.endswith(value + ' ' + v1):
-                                    instr_opcodes = instr_opcodes[:-5] + '?? ' + v1
-
-                                else:
-                                    v1 = '{0:08x}'.format(GetOperandValue(ea, 1))
-                                    v1 = ' '.join([v1[-2:], v1[4:6], v1[2:4], v1[:2]])
-                                    operand_str = value + ' ' + v1
-                                    if instr_opcodes.endswith(operand_str):
-                                        instr_opcodes = instr_opcodes[:-len(operand_str)] + '?? ' + v1
-
-                                    else:
-                                        print 'Unhandled Instruction. Report to developers:'
-                                        print disassembly, instr_opcodes, value
-
-                            else:
-                                print 'Unhandled Instruction. Report to developers:'
-                                print disassembly, instr_opcodes, value
-
-                        #   Mask the disassembly
-                        if operand_index == 1:
-                            disassembly = disassembly[:disassembly.index('[')+1] + reg + '+<Offset>]'
-
-                        else:
-                            disassembly_end = ''
-                            if GetOperandValue(ea, 1) != -1:
-                                disassembly_end = disassembly[disassembly.index(','):]
-                            disassembly = disassembly[:disassembly.index('[')+1] + reg + '+<Offset>]' + disassembly_end
-
+                disassembly, instr_opcodes = data
                 mnemonics.append(disassembly)
                 opcodes.append(instr_opcodes)
 
@@ -525,18 +1172,11 @@ class Assembly(object):
         self.opcodes = opcodes
 
     def mask_opcodes_tuple(self, options):
-        if len(options) == 4:
-            self.mask_opcodes({'esp' : options[0], 
-                                'ebp' : options[1], 
-                                'abs_calls' : options[2], 
-                                'global_offsets' : options[3]})
+        self.mask_options = options
+        self.mask_opcodes(self.mask_options)
 
     def get_save_data_tuple(self):
-        mask_tuple = (self.mask_options['esp'], 
-                        self.mask_options['ebp'],
-                        self.mask_options['abs_calls'],
-                        self.mask_options['global_offsets'])
-        return (self.start_ea, self.end_ea, mask_tuple, self.custom)
+        return (self.start_ea, self.end_ea, self.mask_options, self.custom)
 
     @staticmethod
     def sub_signature_string(opcodes):
@@ -558,25 +1198,47 @@ class MiscAssembly(Assembly):
 
 
 #   Dialog GUI Logic
-#   
-#   These dialogs should have no direct interactions with IDA, allowing it to 
-#   be pulled out to other applications or replaced in the future. 
+#
+#   These dialogs should have no direct interactions with IDA, allowing it to
+#   be pulled out to other applications or replaced in the future.
 #-------------------------------------------------------------------------------
 class AsmSig_Dialog(object):
+    def __init__(self):
+        self.mask = get_gui()
+
     def setupUi(self, Dialog):
         Dialog.setObjectName('Dialog')
         Dialog.setWindowIcon(get_clamav_icon())
         Dialog.setWindowTitle('Assembly to Signature')
-        Dialog.resize(732, 387)
+        Dialog.resize(932, 387)
 
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(2)
-        
+
         if IDA_SDK_VERSION <= 680:
             line_wrap = QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
         else:
             line_wrap = QtWidgets.QPlainTextEdit.NoWrap
+
+        #   Original Opcodes GUI Area
+        self._opcode_groupbox = QtWidgets.QGroupBox()
+        sizePolicy.setHeightForWidth(self._opcode_groupbox.sizePolicy().hasHeightForWidth())
+        self._opcode_groupbox.setSizePolicy(sizePolicy)
+        self._opcode_groupbox.setFixedWidth(200)
+        self._opcode_groupbox.setObjectName('_opcode_groupbox')
+        self._opcode_groupbox.setTitle('Original Opcodes')
+        self._opcodes = QtWidgets.QPlainTextEdit(self._opcode_groupbox)
+        self._opcodes.setReadOnly(True)
+        self._opcodes.setLineWrapMode(line_wrap)
+        font = self._opcodes.document().defaultFont()
+        font.setPointSize(12)
+        font.setFamily('fixedsys,Liberation Mono')
+        self._opcodes.document().setDefaultFont(font)
+        self._vbox_opcodes = QtWidgets.QVBoxLayout(self._opcode_groupbox)
+        self._vbox_opcodes.setContentsMargins(1, 1, 1, 1)
+        self._vbox_opcodes.addWidget(self._opcodes)
+        self._scrollbar_opcodes = self._opcodes.verticalScrollBar()
 
         #   Opcodes GUI Area
         self.opcode_groupbox = QtWidgets.QGroupBox()
@@ -588,9 +1250,6 @@ class AsmSig_Dialog(object):
         self.opcodes = QtWidgets.QPlainTextEdit(self.opcode_groupbox)
         self.opcodes.setReadOnly(True)
         self.opcodes.setLineWrapMode(line_wrap)
-        font = self.opcodes.document().defaultFont()
-        font.setPointSize(12)
-        font.setFamily('fixedsys,Liberation Mono')
         self.opcodes.document().setDefaultFont(font)
         self.vbox_opcodes = QtWidgets.QVBoxLayout(self.opcode_groupbox)
         self.vbox_opcodes.setContentsMargins(1, 1, 1, 1)
@@ -612,47 +1271,12 @@ class AsmSig_Dialog(object):
         self.vbox_asm.addWidget(self.asm)
 
         #   Masking Options Area
-        self.mask_options = QtWidgets.QGroupBox()
-        sizePolicy.setHeightForWidth(self.mask_options.sizePolicy().hasHeightForWidth())
-        self.mask_options.setSizePolicy(sizePolicy)
-        self.mask_options.setObjectName('mask_options')
-        self.mask_options.setTitle('Mask Options')
-
-        self.vbox_mask = QtWidgets.QVBoxLayout(self.mask_options)
-        self.esp_checkbox = QtWidgets.QCheckBox(self.mask_options)
-        self.esp_checkbox.setObjectName('esp_mask_checkbox')
-        self.vbox_mask.addWidget(self.esp_checkbox)
-        self.esp_checkbox.setText('ESP Offsets')
-
-        self.ebp_checkbox = QtWidgets.QCheckBox(self.mask_options)
-        self.ebp_checkbox.setObjectName('ebp_mask_checkbox')
-        self.vbox_mask.addWidget(self.ebp_checkbox)
-        self.ebp_checkbox.setText('EBP Offsets')
-
-        self.abs_call_checkbox = QtWidgets.QCheckBox(self.mask_options)
-        self.abs_call_checkbox.setObjectName('abs_call_mask_checkbox')
-        self.vbox_mask.addWidget(self.abs_call_checkbox)
-        self.abs_call_checkbox.setText('Absolute Calls')
-
-        self.global_offsets_checkbox = QtWidgets.QCheckBox(self.mask_options)
-        self.global_offsets_checkbox.setObjectName('reg_mask_checkbox')
-        self.vbox_mask.addWidget(self.global_offsets_checkbox)
-        self.global_offsets_checkbox.setText('Global Offsets')
-        
-        self.custom_checkbox = QtWidgets.QCheckBox(self.mask_options)
-        self.custom_checkbox.setObjectName('custom_mask_checkbox')
-        self.vbox_mask.addWidget(self.custom_checkbox)
-        self.custom_checkbox.setText('Customize')
-        
-        self.vbox_mask.addWidget(self.esp_checkbox)
-        self.vbox_mask.addWidget(self.ebp_checkbox)
-        self.vbox_mask.addWidget(self.abs_call_checkbox)
-        self.vbox_mask.addWidget(self.global_offsets_checkbox)
-        self.vbox_mask.addWidget(self.custom_checkbox)
+        self.mask_options = self.mask.gui
 
         #   Top Horizontal Layout:  |  Opcodes | Assembly | Masking Options |
         self.hbox_top_data = QtWidgets.QHBoxLayout()
         self.hbox_top_data.setObjectName('hbox_top_data')
+        self.hbox_top_data.addWidget(self._opcode_groupbox)
         self.hbox_top_data.addWidget(self.opcode_groupbox)
         self.hbox_top_data.addWidget(self.asm_groupbox)
         self.scrollbar_asm = self.asm.verticalScrollBar()
@@ -689,13 +1313,11 @@ class AsmSig_Dialog(object):
         #   Signal Handling
         self.ok_button.clicked.connect(Dialog.ok_button_callback)
         self.cancel_button.clicked.connect(Dialog.reject)
+        self._scrollbar_opcodes.valueChanged.connect(Dialog.sync_scrolls)
         self.scrollbar_opcodes.valueChanged.connect(Dialog.sync_scrolls)
         self.scrollbar_asm.valueChanged.connect(Dialog.sync_scrolls)
-        self.esp_checkbox.stateChanged.connect(Dialog.apply_mask)
-        self.ebp_checkbox.stateChanged.connect(Dialog.apply_mask)
-        self.abs_call_checkbox.stateChanged.connect(Dialog.apply_mask)
-        self.global_offsets_checkbox.stateChanged.connect(Dialog.apply_mask)
-        self.custom_checkbox.stateChanged.connect(Dialog.toggle_custom_ui)
+        self.mask.register_signals( Dialog.apply_mask,
+                                    Dialog.toggle_custom_ui)
 
 class MiscSig_Dialog(object):
     def setupUi(self, Dialog):
@@ -797,7 +1419,7 @@ class SubmitSig_Dialog(object):
 
         #   Signal Handling
         self.button_box.accepted.connect(Dialog.accept)
-                
+
 
 #   Class to interface with Dialog GUIs and the back end data
 #-------------------------------------------------------------------------------
@@ -820,14 +1442,14 @@ class CASCDialog(QtWidgets.QDialog):
     def success_callback(self):
         if self.callback_fn != None:
             self.callback_fn(self.data, self.ui.notes.toPlainText(), self.index)
-    
+
     def ok_button_callback(self):
         if None != self.data:
             msg = verify_clamav_sig(self.data.opcode_to_signatrue())
             if None != msg:
                 self.ui.error_msg.setText(self.error_format.format(msg))
                 return
-            
+
         self.accept()
 
     def show(self):
@@ -851,20 +1473,21 @@ class AsmSignatureDialog(CASCDialog):
         #   Get Opcodes
         if (BADADDR == start_ea) or (BADADDR == end_ea):
             #   Check if user has selected a chunk of code
-            if (BADADDR != SelStart()) and (BADADDR != SelEnd()):
-                start_ea, end_ea = (SelStart(), SelEnd())
+            if (BADADDR != IDAW.SelStart()) and (BADADDR != IDAW.SelEnd()):
+                start_ea, end_ea = (IDAW.SelStart(), IDAW.SelEnd())
 
-            #   Check if user has selected a basic block 
-            elif get_func(ScreenEA()):
-                block = get_block(ScreenEA())
+            #   Check if user has selected a basic block
+            elif IDAW.get_func(IDAW.ScreenEA()):
+                block = get_block(IDAW.ScreenEA())
                 if None != block:
                     start_ea = block.startEA
                     end_ea = block.endEA
 
-        if ((BADADDR != start_ea) and is_in_sample_segments(start_ea) and 
+        if ((BADADDR != start_ea) and is_in_sample_segments(start_ea) and
             (BADADDR != end_ea) and is_in_sample_segments(end_ea - 1)):
-                self.data = Assembly(start_ea, end_ea)  
+                self.data = Assembly(start_ea, end_ea)
                 self.update_opcodes_and_asm()
+                self.ui._opcodes.setPlainText('\n'.join(self.data.get_original_opcode_list()))
 
         else:
             msg_box = QtWidgets.QMessageBox()
@@ -878,6 +1501,8 @@ class AsmSignatureDialog(CASCDialog):
             self.should_show = False
 
     def sync_scrolls(self, value):
+        if value != self.ui._scrollbar_opcodes.value():
+            self.ui._scrollbar_opcodes.setValue(value)
         if value != self.ui.scrollbar_opcodes.value():
             self.ui.scrollbar_opcodes.setValue(value)
         if value != self.ui.scrollbar_asm.value():
@@ -885,68 +1510,37 @@ class AsmSignatureDialog(CASCDialog):
 
         self.old_scroll_value = value
 
-    def set_mask(self, mask_tuple):
-        if len(mask_tuple) == 4:
-            if mask_tuple[0]:
-                self.ui.esp_checkbox.setChecked(True)
-            if mask_tuple[1]:
-                self.ui.ebp_checkbox.setChecked(True)
-            if mask_tuple[2]:
-                self.ui.abs_call_checkbox.setChecked(True)
-            if mask_tuple[3]:
-                self.ui.global_offsets_checkbox.setChecked(True)
-
-            self.data.mask_opcodes_tuple(mask_tuple)
+    def set_mask(self, masking):
+        self.ui.mask.set_masking(masking)
 
     def apply_mask(self, value):
-        mask_options = {'esp' : self.ui.esp_checkbox.isChecked(),
-                        'ebp' : self.ui.ebp_checkbox.isChecked(),
-                        'abs_calls' : self.ui.abs_call_checkbox.isChecked(),
-                        'global_offsets' : self.ui.global_offsets_checkbox.isChecked()}
-
         scroll_value = self.old_scroll_value
-
-        self.data.mask_opcodes(mask_options)
+        self.data.mask_opcodes(self.ui.mask.get_masking())
 
         self.toggle_custom_ui()
         self.update_opcodes_and_asm()
         self.sync_scrolls(scroll_value)
 
     def toggle_custom_ui(self, is_custom=False):
-        if is_custom or self.ui.custom_checkbox.isChecked():
+        if is_custom or self.ui.mask.custom_checked():
             #   Disable selecting other mask options
-            self.ui.esp_checkbox.setEnabled(False)
-            self.ui.ebp_checkbox.setEnabled(False)
-            self.ui.abs_call_checkbox.setEnabled(False)
-            self.ui.global_offsets_checkbox.setEnabled(False)
-
-            #   Disable asm qplaintextedit
-            self.ui.asm.setEnabled(False)
+            self.ui.mask.disable()
 
             #   Enable editing opcodes qplaintextedit
             self.ui.opcodes.setReadOnly(False)
 
             if is_custom:
                 #   Disconnect checkbox signal to prevent reentry
-                self.ui.custom_checkbox.stateChanged.disconnect(self.toggle_custom_ui)
-                self.ui.custom_checkbox.setChecked(True)
-                self.ui.custom_checkbox.stateChanged.connect(self.toggle_custom_ui)
-
+                self.ui.mask.set_custom(True)
         else:
             #   Enable selecting other mask options
-            self.ui.esp_checkbox.setEnabled(True)
-            self.ui.ebp_checkbox.setEnabled(True)
-            self.ui.abs_call_checkbox.setEnabled(True)
-            self.ui.global_offsets_checkbox.setEnabled(True)
-
-            #   Enable  asm qplaintextedit
-            self.ui.asm.setEnabled(True)
+            self.ui.mask.enable()
 
             #   Disble editing opcodes qplaintextedit
             self.ui.opcodes.setReadOnly(True)
 
-            #   Restore opcodes to match 
-            self.data.mask_opcodes({})
+            #   Restore opcodes to match
+            self.data.mask_opcodes(self.ui.mask.get_masking())
             self.update_opcodes_and_asm()
 
     def set_custom_opcode_list(self, opcodes):
@@ -958,18 +1552,20 @@ class AsmSignatureDialog(CASCDialog):
         self.ui.asm.setPlainText('\n'.join(self.data.get_mnemonics_list()))
 
         #   Set scroll values back to their old values
+        self.ui._scrollbar_opcodes.setValue(self.old_scroll_value)
         self.ui.scrollbar_opcodes.setValue(self.old_scroll_value)
         self.ui.scrollbar_asm.setValue(self.old_scroll_value)
 
     def opcodes_text_changed(self):
-        if self.ui.custom_checkbox.isChecked():
+        if self.ui.mask.custom_checked():
             self.data.set_opcode_list(self.ui.opcodes.toPlainText().split('\n'), True)
 
 class MiscSignatureDialog(CASCDialog):
-    view_as_options = ['Hex', 'ASCII', 'Unicode']
+    view_as_options = ['Hex', 'ASCII', 'Unicode', 'Decoded Sig']
     msg = '<font color="#ff0000">{0} Error: {1}</font>'
     conversion_funcs = [lambda x: x.replace(' ', '').decode('hex'),
-                        lambda x: unicode(x.replace(' ', '').decode('hex'))]
+                        lambda x: unicode(x.replace(' ', '').decode('hex')),
+                        lambda x: convert_to_ascii(x)]
 
     def __init__(self, parent, index=None, data=None, notes=None):
         super(MiscSignatureDialog, self).__init__(parent)
@@ -981,7 +1577,7 @@ class MiscSignatureDialog(CASCDialog):
         self.ui = MiscSig_Dialog()
         self.ui.setupUi(self)
 
-        if None != data:
+        if data:
             self.ui.sub_signature.setPlainText(data)
 
         if None != notes:
@@ -1033,6 +1629,12 @@ class MiscSignatureDialog(CASCDialog):
                 self.ui.view_as_combobox.setCurrentIndex(hex_index)
                 return
 
+        elif view == self.view_as_options.index('Decoded Sig'):
+            opcodes = [self.conversion_funcs[2](opcodes)]
+
+            self.ui.sub_signature.setReadOnly(True)
+            self.ui.sub_signature.setEnabled(False)
+
         else:
             self.ui.sub_signature.setReadOnly(False)
             self.ui.sub_signature.setEnabled(True)
@@ -1046,7 +1648,7 @@ class MiscSignatureDialog(CASCDialog):
         self.ui.sub_signature.setPlainText('\n'.join(opcodes))
 
 class SubmitSigDialog(QtWidgets.QDialog):
-    def __init__(self, parent, signature, notes):
+    def __init__(self, parent, signature, notes, breakdown):
         super(SubmitSigDialog, self).__init__(parent)
 
         self.callback_fn = None
@@ -1058,37 +1660,42 @@ class SubmitSigDialog(QtWidgets.QDialog):
                 'I\'ve created a ClamAV Signature ({0}) with the IDA Pro '
                 'ClamAV Signature Creator plugin. Please FP test and publish '
                 'if it passes.\n\n'
-                'Sample MD5: {1}\n'
-                'Signature:\n{2}\n\n'
-                'Notes:\n{3}\n\n'
+                'Sample MD5: {1}\n\n'
+                '[RESEARCH NOTES]\n\n{2}\n\n'
+                '[NEW SIGNATURES]\n\n{3}\n\n'
+                '[DETECTION BREAKDOWN]\n\n{4}\n\n'
                 'Thanks.'
                 )
 
+        breakdown = breakdown.replace('\x00', ' ')
         for i in xrange(len(notes)):
             if (None != notes[i][0]) and (0 < len(notes[i][0])):
                 notes[i] = (' (0x{0[0]:x}, 0x{0[1]:x})'.format(notes[i][0]), notes[i][1])
             notes[i] = 'Sig{0}{1[0]}:\n{1[1]}\n'.format(i, notes[i])
-        notes_str = ('\n' + '-' * 40 + '\n').join(notes)
+        notes_str = ('\n' + '-' * 40 + '\n').join(notes).replace('\x00', ' ')
 
-        self.ui.email_body.setPlainText(data.format(GetInputFilePath(), 
-                                        GetInputMD5(), signature, notes_str))
+        text = data.format(IDAW.GetInputFilePath(), IDAW.GetInputMD5(),
+                            notes_str, signature, breakdown)
+        self.ui.email_body.setPlainText(text)
 
         link_text = ('Send the below to <a href="mailto:community-sigs@lists.'
                         'clamav.net?Subject={0}&Body={1}">community-sigs@lists'
                         '.clamav.net</a>')
 
-        data = data.format(GetInputFilePath(), GetInputMD5(),
-                                        signature, quote_plus(notes_str))
+        data = data.format(IDAW.GetInputFilePath(), IDAW.GetInputMD5(),
+                            quote_plus(notes_str), signature, breakdown)
         link_data = link_text.format('Community Signature Submission', data)
         self.ui.link.setText(link_data)
-        
 
-#   Model class that contains all of the sub signatures contained in this IDB 
-#   file. The model is initialized when the plugin is initialized from an IDC 
+
+#   Model class that contains all of the sub signatures contained in this IDB
+#   file. The model is initialized when the plugin is initialized from an IDC
 #   array stored inside of the IDB file, so sub signatures are persistent across
 #   IDA instances as long as the IDB is saved after changes are made.
 #-------------------------------------------------------------------------------
 class SubSignatureModel(QtCore.QAbstractTableModel):
+    record_size = 1024
+
     def __init__(self, parent = None):
         super(SubSignatureModel, self).__init__(parent)
 
@@ -1096,23 +1703,24 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
         self.index_lookup_table = []
 
         #   Initialize from netnodes in IDB file
-        self.sigs_db = GetArrayId('sub_signatures')
+        self.sigs_db = IDAW.GetArrayId('sub_signatures')
         if self.sigs_db == -1:
-            self.sigs_db = CreateArray('sub_signatures')
+            self.sigs_db = IDAW.CreateArray('sub_signatures')
 
         self.sub_signatures = collections.OrderedDict()
 
-        index = GetFirstIndex(AR_STR, self.sigs_db)
+        index = IDAW.GetFirstIndex(AR_LONG, self.sigs_db)
         while index != -1:
-            entry = pickle.loads(GetArrayElement(AR_STR, self.sigs_db, index))
+            entry = self.__get_array(index)
+
             self.sub_signatures[index] = entry
             self.next_index = index
             self.index_lookup_table.append(index)
-            index = GetNextIndex(AR_STR, self.sigs_db, index)
+            index = IDAW.GetNextIndex(AR_LONG, self.sigs_db, index)
 
         self.next_index += 1
         print '[CASCPlugin] Loaded %d sub signatures' % len(self.sub_signatures)
-        
+
     def rowCount(self, index=QtCore.QModelIndex()):
         return len(self.sub_signatures)
 
@@ -1128,6 +1736,8 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             row = self.sub_signatures.values()[index.row()]
+            if row is None:
+                return None
             ((start_ea, end_ea, mask_options, custom), notes) = row
 
             if index.column() == 0:
@@ -1193,11 +1803,11 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.removeRow(row_index)
 
             #   Delete from IDB
-            DelArrayElement(AR_STR, self.sigs_db, index)
+            IDAW.DelArrayElement(AR_LONG, self.sigs_db, index)
+            IDAW.DeleteArray('sub_signatures_{}'.format(index))
 
     def add_sub_signature(self, sub_sig_data, notes, index=None):
         element =  (sub_sig_data.get_save_data_tuple(), notes)
-
         if None == index:
             index = self.next_index
             self.next_index += 1
@@ -1216,20 +1826,51 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.sub_signatures[index] = element
 
         #   Add to IDB
-        SetArrayString(self.sigs_db, index, pickle.dumps(element))
+        self.__set_array(element[0], notes, index)
+        self.sub_signatures[index] = (element[0], notes)
         self.index_lookup_table.append(index)
 
     def update_sub_signature(self, sub_sig_data, notes, row_index):
-        element =  (sub_sig_data.get_save_data_tuple(), notes)
+        element =  sub_sig_data.get_save_data_tuple()
         index = self.index_lookup_table[row_index]
-        
+
         #   Update in IDB
-        self.sub_signatures[index] = element
-        SetArrayString(self.sigs_db, index, pickle.dumps(element))
-        
+        self.__set_array(element, notes, index)
+        self.sub_signatures[index] = (element, notes)
+
     def get_row_original_data(self, row_index):
         if row_index < len(self.index_lookup_table):
             return self.sub_signatures[self.index_lookup_table[row_index]]
+
+    def __set_array(self, element, notes, index):
+        array_id = 'sub_signatures_{}'.format(index)
+        sig_db = IDAW.GetArrayId(array_id)
+        if sig_db == -1:
+            sig_db = IDAW.CreateArray(array_id)
+
+        data = pickle.dumps((element, notes))
+
+        begin = 0
+        for i in xrange(0, int(math.ceil(float(len(data)) / self.record_size))):
+            begin = i * self.record_size
+            end = begin + self.record_size
+            IDAW.SetArrayString(sig_db, i, str(data[begin:end]))
+
+        IDAW.SetArrayLong(IDAW.GetArrayId('sub_signatures'), index, 1)
+
+    def __get_array(self, index):
+        sig_db = IDAW.GetArrayId('sub_signatures_{}'.format(index))
+        if sig_db == -1:
+            return None
+
+        data = ''
+        index = 0
+        while index != -1:
+            data += IDAW.GetArrayElement(AR_STR, sig_db, index)
+            index = IDAW.GetNextIndex(AR_STR, sig_db, index)
+
+        element, notes = pickle.loads(data)
+        return (element, notes)
 
 
 #   Main Plug-in Form Class
@@ -1255,7 +1896,7 @@ class SignatureCreatorFormClass(PluginForm):
         self.populate_main_form()
 
         system = self.system[get_file_type()]
-        self.sample_name.setPlainText('{0}.Trojan.Agent'.format(system))
+        self.sample_name.setText('{0}.Trojan.Agent'.format(system))
 
         self.icon = get_clamav_icon()
         #self.parent.setWindowIcon(self.icon)
@@ -1263,7 +1904,7 @@ class SignatureCreatorFormClass(PluginForm):
             self.grand_parent = self.parent.parent()
             self.grand_parent.setWindowIcon(get_clamav_icon())
         except:
-            #   This is an error in PySide/FromCObject that can cause the 
+            #   This is an error in PySide/FromCObject that can cause the
             #   grand_parent's refcount to be 0 and deleted
             pass
 
@@ -1291,7 +1932,7 @@ class SignatureCreatorFormClass(PluginForm):
         dialog = AsmSignatureDialog(self.parent)
         dialog.registerSuccessCallback(self.sub_signature_model.add_sub_signature)
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
     def insert_string_item(self, ctx):
         #   Get IDA's toplevel chooser widget
@@ -1317,7 +1958,7 @@ class SignatureCreatorFormClass(PluginForm):
             address = model.data(model.index(index, 0), Qt.DisplayRole)
             address = int(address[address.index(':')+1:], 16)
             length = model.data(model.index(index, 1), Qt.DisplayRole)
-            
+
             #   Don't inclue the \0 character
             length = int(length, 16) - 1
             if model.data(model.index(index, 2), Qt.DisplayRole) != 'C':
@@ -1327,9 +1968,42 @@ class SignatureCreatorFormClass(PluginForm):
 
             data[address] = ' '.join(raw)
 
-        sub_signature = map(lambda x: data[x], sorted(data.keys()))
+        sub_signature = [data[x] for x in sorted(data.keys())]
         try:
-            notes = map(lambda x: x.replace(' ', '').decode('hex'), sub_signature)
+            notes = [x.replace(' ', '').decode('hex') for x in sub_signature]
+            notes = map(unicode, notes)
+        except UnicodeDecodeError:
+            pass
+
+        self.insert_custom_item(' * '.join(sub_signature), '\n'.join(notes))
+
+    def insert_import_item(self, ctx):
+        try:
+            chooser = self.FormToPySideWidget(ctx.form)
+        except AttributeError:
+            chooser = self.FormToPyQtWidget(ctx.form)
+
+        #   Get the embedded table view
+        table_view = chooser.findChild(QtWidgets.QTableView)
+        sort_order = table_view.horizontalHeader().sortIndicatorOrder()
+        sort_column = table_view.horizontalHeader().sortIndicatorSection()
+
+        #   Get the table view's data
+        model = table_view.model()
+        sel = ctx.chooser_selection
+
+        data = {}
+        for row_data in table_view.selectionModel().selectedRows():
+            index = row_data.row()
+
+            address = int(model.data(model.index(index, 0), Qt.DisplayRole), 16)
+            name = model.data(model.index(index, 2), Qt.DisplayRole)
+
+            data[address] = ' '.join([x.encode('hex') for x in name]) + ' 00'
+
+        sub_signature = [data[x] for x in sorted(data.keys())]
+        try:
+            notes = [x.replace(' ', '').decode('hex') for x in sub_signature]
             notes = map(unicode, notes)
         except UnicodeDecodeError:
             pass
@@ -1341,7 +2015,7 @@ class SignatureCreatorFormClass(PluginForm):
         dialog = MiscSignatureDialog(self.parent, data=data, notes=notes)
         dialog.registerSuccessCallback(self.sub_signature_model.add_sub_signature)
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
     def export_all(self):
         filename = QtWidgets.QFileDialog.getSaveFileName(self.parent, 'Save CSV export to...')
@@ -1414,8 +2088,7 @@ class SignatureCreatorFormClass(PluginForm):
         generate_button.setFixedWidth(160)
         generate_button.clicked.connect(self.generate_signature)
         sample_name_label = QtWidgets.QLabel('Name:')
-        self.sample_name = OneLineQPlainTextEdit()
-        self.sample_name.setPlainText('')
+        self.sample_name = QtWidgets.QLineEdit()
         self.sample_name.setFixedHeight(generate_button.sizeHint().height())
         hboxview = QtWidgets.QHBoxLayout()
         hboxview.setContentsMargins(1, 1, 1, 1)
@@ -1453,7 +2126,7 @@ class SignatureCreatorFormClass(PluginForm):
                 dialog.set_mask(mask_options)
 
             else:
-                dialog = MiscSignatureDialog(self.parent, row_index)
+                dialog = MiscSignatureDialog(self.parent, index=row_index)
 
             if None != custom_opcodes:
                 dialog.set_custom_opcode_list(custom_opcodes)
@@ -1462,21 +2135,21 @@ class SignatureCreatorFormClass(PluginForm):
             dialog.update_opcodes_and_asm()
             dialog.registerSuccessCallback(self.sub_signature_model.update_sub_signature)
             dialog.setModal(True)
-            dialog.show() 
+            dialog.show()
 
     def generate_signature(self):
-        ndb_format = '{0}:{1}:*:{2}'
-        ldb_format = '{0};Engine:51-255,Target:{1};{2};{3}'
+        ndb_format = '{0}:{1}:*:{2}:70'
+        ldb_format = '{0};Engine:70-255,Target:{1};{2};{3}'
 
         msg_box = QtWidgets.QMessageBox()
         msg_box.setIcon(QtWidgets.QMessageBox.Critical)
         msg_box.setWindowTitle('Unable to create ClamAV Signature')
 
         #   Ensure the signature name is valid
-        name = self.sample_name.toPlainText()
+        name = self.sample_name.text()
         if None == re.match('^\w+\.\w+\.\w+(|\.Gen)$', name):
             msg_box.setWindowTitle('Invalid ClamAV Signature Name')
-            msg_box.setText(('Could not create ClamAV signature. An invlaid '
+            msg_box.setText(('Could not create ClamAV signature. An invalid '
                             'signature\n name was provided.\n\nName Format:\n'
                             '<Targeted Platform or File Format>.<Category>.'
                             '<Sample Name>\n\nOptional Suffix: .Gen'))
@@ -1489,7 +2162,7 @@ class SignatureCreatorFormClass(PluginForm):
             if None != sub_sig:
                 sub_sigs.append(sub_sig)
 
-        #   Dynamically get the file type 
+        #   Dynamically get the file type
         file_type = get_file_type()
         signature = None
 
@@ -1501,13 +2174,27 @@ class SignatureCreatorFormClass(PluginForm):
         #   Get opcodes for all sub signatures
         opcodes = []
         notes = []
+        breakdown = {'name' : 'VIRUS NAME: {}'.format(name),
+                    'description' : 'TDB: Engine:51-255,Target:{0}'.format(file_type),
+                    'subsigs' : {}}
+        sig_id = 0
         for (start_ea, end_ea, mask_options, custom_opcodes), note in sub_sigs:
             temp_note = ('', note)
-            if (None != start_ea) and (None != end_ea) and (None == custom_opcodes):
+            breakdown['subsigs'][sig_id] = {'offset' : 'OFFSET: ANY',
+                                            'sigmod' : 'SIGMOD: NONE',
+                                            'subsig' : convert_to_ascii(custom_opcodes)}
+            if (None != start_ea) and (None != end_ea):
                 obj = Assembly(start_ea, end_ea)
                 obj.mask_opcodes_tuple(mask_options)
-                custom_opcodes = obj.get_opcode_list()
                 temp_note = ((start_ea, end_ea), note)
+                breakdown['subsigs'][sig_id]['subsig'] = '\n'.join(obj.get_mnemonics_list())
+
+                if None == custom_opcodes:
+                    custom_opcodes = obj.get_opcode_list()
+                else:
+                    temp = '{0}\n{1}\n{0}'.format(  '{0}CUSTOMIZE SUBSIG FROM{0}'.format('*'*20),
+                                                    breakdown['subsigs'][sig_id]['subsig'])
+                    breakdown['subsigs'][sig_id]['subsig'] = temp
 
             elif None == custom_opcodes:
                 msg_box.setText(('Saved data is incorrectly formated.\nCould '
@@ -1515,11 +2202,9 @@ class SignatureCreatorFormClass(PluginForm):
                 msg_box.exec_()
                 continue
 
-            elif (None != start_ea) and (None != end_ea):
-                temp_note = ((start_ea, end_ea), note)
-
             opcodes.append(''.join(custom_opcodes).replace(' ', ''))
             notes.append(temp_note)
+            sig_id += 1
 
         #   Create signature based on opcodes
         if 0 == len(opcodes):
@@ -1529,18 +2214,35 @@ class SignatureCreatorFormClass(PluginForm):
         elif 1 == len(opcodes):
             #   Create NDB signature
             signature = ndb_format.format(name, file_type, ''.join(opcodes[0]).replace('', ''))
-            print 'NDB created from custom_opcodes:\n\t{0}'.format(signature)
+            breakdown['description'] = 'TARGET TYPE: {}'.format(get_type_name(file_type))
+            format_str = (  '{0[offset]}\n'
+                            'DECODED SUBSIGNATURE:\n{0[subsig]}')
+            breakdown['breakdown'] = format_str.format(breakdown['subsigs'][0])
+            breakdown['decoded'] = '{0[name]}\n{0[description]}\n{0[breakdown]}'.format(breakdown)
+            print 'NDB created from custom_opcodes:\n\t{0}\n'.format(signature)
 
         else:
+            format_str = (  ' * SUBSIG ID {0}\n'
+                            ' +-> {1[offset]}\n'
+                            ' +-> {1[sigmod]}\n'
+                            ' +-> DECODED SUBSIGNATURE:\n{1[subsig]}')
             #   Create LDB signature
             condition = '&'.join(map(str, range(len(sub_sigs))))
             signature = ldb_format.format(name, file_type, condition, ';'.join(opcodes))
-            print 'LDB created from custom_opcodes:\n\t{0}'.format(signature)
+            breakdown['logical'] = 'LOGICAL EXPRESSION: {}'.format(condition)
+            indexes = sorted(breakdown['subsigs'].keys())
+            breakdowns = [format_str.format(i, breakdown['subsigs'][i]) for i in indexes]
+            breakdown['breakdown'] = '\n'.join(breakdowns)
+            breakdown['decoded'] = '{0[name]}\n{0[description]}\n{0[logical]}\n{0[breakdown]}'.format(breakdown)
+            print 'LDB created from custom_opcodes:\n\t{0}\n'.format(signature)
+
+        #   IDA stops printing when it sees a null byte.
+        print breakdown['decoded'].replace('\x00', ' ')
 
         #   Display dialog to user
-        dialog = SubmitSigDialog(self.parent, signature, notes)
+        dialog = SubmitSigDialog(self.parent, signature, notes, breakdown['decoded'])
         dialog.setModal(True)
-        dialog.show() 
+        dialog.show()
 
         return signature
 
@@ -1551,7 +2253,7 @@ class SignatureCreatorFormClass(PluginForm):
 #   ClamAV Signature Creator (CASC) Plug-in Class
 #-------------------------------------------------------------------------------
 class ClamAVSigCreatorPlugin(plugin_t):
-    flags = PLUGIN_FIX
+    flags = IDAW.PLUGIN_FIX
     comment = 'Aids analysts in creating ClamAV NDB and LDB signatures'
 
     #   IDA Pro display details
@@ -1562,7 +2264,7 @@ class ClamAVSigCreatorPlugin(plugin_t):
     def init(self):
         global clamav_sig_creator_plugin
 
-        file_type = GetCharPrm(INF_FILETYPE)
+        file_type = IDAW.GetCharPrm(INF_FILETYPE)
 
         #   Currently only supports intel_x86
         if get_file_type() not in [1, 6, 9]:
@@ -1574,7 +2276,7 @@ class ClamAVSigCreatorPlugin(plugin_t):
         if not clamav_sig_creator_plugin:
             clamav_sig_creator_plugin = SignatureCreatorFormClass()
 
-        return PLUGIN_OK
+        return IDAW.PLUGIN_OK
 
     def run(self, arg):
         global clamav_sig_creator_plugin
