@@ -19,7 +19,7 @@
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
 #
-#   Last revision: April 2015
+#   Last revision: March 2017
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
 #
@@ -47,6 +47,7 @@ import types
 import re
 import csv
 from urllib import quote_plus
+from pprint import pprint
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
@@ -676,7 +677,7 @@ class IntelParser(CASCParser):
                     0xde : [0xc0, 0xc1, 0xc8, 0xc9, 0xd9, 0xe0, 0xe1, 0xe8,
                             0xe9, 0xf0, 0xf1, 0xf8, 0xf9],
                     0xdf : [0xe0, 0xe8, 0xf0],
-                    0x0f : range(0x80,0x90) + [0xc8],
+                    0x0f : [0x34] + range(0x80,0x90) + [0xc8],
                     0xfa : [0xae]}
 
     three_opcodes = {0x9b : ['\xd3\xe3', '\xdb\xe2', '\xdf\xe0']}
@@ -698,9 +699,10 @@ class IntelParser(CASCParser):
                                 range(0xf6, 0xff)}
 
     no_modrm = [0x04, 0x05, 0x07, 0x0c, 0x0e, 0x1c, 0x1d, 0x1e, 0x24, 0x25,
-                0x27, 0x34, 0x35, 0x37, 0x3c, 0x3d, 0x3f, 0x77, 0x78, 0x79,
-                0x7a, 0x7b, 0x82] + range(0x91, 0xa3) + [0xa6, 0xa7, 0xa8,
-                0xa9, 0xaa, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf, 0xf5]
+                0x27, 0x34, 0x35, 0x37, 0x3c, 0x3d, 0x3f] + range(0x40, 0x50) + \
+                [0x77, 0x78, 0x79, 0x7a, 0x7b, 0x82] + range(0x91, 0xa3) + \
+                [0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xc9, 0xca, 0xcb, 0xcc, 0xcd,
+                0xce, 0xcf, 0xf5]
 
     reg_variants = {'eax' : re.compile('([^a-zA-Z_@]|^)(e{0,1}a(?:x|h|l))'),
                     'ebx' : re.compile('([^a-zA-Z_@]|^)(e{0,1}b(?:x|h|l))'),
@@ -732,9 +734,13 @@ class IntelParser(CASCParser):
 
         #   Call instructions
         #--------------------
-        if (instr['opcode'][1] == 'call') and ('call' in maskings):
+        if ((instr['opcode'][1] == 'call') and ('call' in maskings)
+            and (len(instr['imm'][0] + instr['disp'][0]) > 0)):
             #   Mask off absolute/relative call offsets
             masked_imm = '{{{}}}'.format(len(instr['imm'][0]))
+            if len(instr['imm'][0]) == 0:
+                masked_imm = '{{{}}}'.format(len(instr['disp'][0]))
+
             if len(instr['modr/m']) > 1:
                 #   Absolute call
                 m_opcodes += [instr['modr/m'][0].encode('hex'), masked_imm]
@@ -772,158 +778,185 @@ class IntelParser(CASCParser):
         if len(instr['prefix']) > 1:
             prefix = instr['prefix'][1]
         current_disassembly = [prefix, instr['opcode'][1]] + operands
+        original_disassembly = current_disassembly
+        original_operands = current_opcodes
 
-        #   Global offset instructions
-        #   A little complicated to do since it could just be a hard coded value
-        #-----------------------------------------------------------------------
-        if ('global' in maskings) and ((len(instr['imm']) + len(instr['disp'])) > 2):
-            #   Assuming the value is a global offset if it exists within a
-            #   segment
-            #   Since VirtualAlloc uses 0x400000 and many PEs are based at that
-            #   address we are going to exclude it
-            if (len(instr['imm']) > 1):
-                offset = int(instr['imm'][1][2:].replace('L', ''), 16)
-                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
-                    imm = current_opcodes[5]
-                    if len(imm) == 1:
-                        current_opcodes[5] = '??'
-                    else:
-                        current_opcodes[5] = '{{{}}}'.format(len(imm))
+        try:
+            #   Global offset instructions
+            #   A little complicated to do since it could just be a hard coded value
+            #-----------------------------------------------------------------------
+            if ('global' in maskings) and ((len(instr['imm']) + len(instr['disp'])) > 2):
+                #   Assuming the value is a global offset if it exists within a
+                #   segment
+                #   Since VirtualAlloc uses 0x400000 and many PEs are based at that
+                #   address we are going to exclude it
+                operand_masked = False
+                original_operand = -1
+                operand_index = 0
+                if (len(instr['imm']) > 1):
+                    offset = int(instr['imm'][1][2:].replace('L', ''), 16)
+                    if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                        imm = current_opcodes[5]
+                        original_operand = imm
+                        operand_index = 5
+                        if len(imm) == 1:
+                            current_opcodes[5] = '??'
+                        else:
+                            current_opcodes[5] = '{{{}}}'.format(len(imm))
 
-                    for i in xrange(2, len(current_disassembly)):
-                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
-                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
-                            current_disassembly[i] = '<Global Offset>'
-
-            if (len(instr['disp']) > 1):
-                offset = int(instr['disp'][1][2:].replace('L', ''), 16)
-                if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
-                    imm = current_opcodes[4]
-                    if len(imm) == 1:
-                        current_opcodes[4] = '??'
-                    else:
-                        current_opcodes[4] = '{{{}}}'.format(len(imm))
-
-                    for i in xrange(2, len(current_disassembly)):
-                        if (('{:x}'.format(offset) in current_disassembly[i].lower())
-                            or (IDAW.LocByName(current_disassembly[i]) == offset)):
-                            current_disassembly[i] = '<Global Offset>'
-
-
-        #   SP and BP displacement masking
-        #-----------------------------------------------------------------------
-        if len(instr['disp']) > 0:
-            if len(instr['modr/m']) > 1:
-                #   Check the displacement value is from an esp offset
-                modrm = instr['modr/m'][1]
-                if 0b01 <= modrm['mod'] <= 0b10:
-                    mask_disp = ''
-                    #   EBP offset
-                    if ('bp' in maskings) and (modrm['rm'] == 0b101):
-                        mask_disp = 'bp'
-
-                    #   ESP offset
-                    if (('sp' in maskings) and (modrm['rm'] == 0b100)
-                        and (len(instr['sib']) > 1)):
-                        sib = instr['sib'][1]
-                        if sib['base'] == 0b100:
-                            mask_disp = 'sp'
-
-                    if mask_disp:
                         for i in xrange(2, len(current_disassembly)):
-                            x = current_disassembly[i]
-                            mask_re = '{}+[^\]]+'.format(mask_disp)
-                            value = '{0}+<{1} Offset>'.format(mask_disp, mask_disp.upper())
-                            current_disassembly[i] = self.mask_operand(x, mask_re, value)
+                            if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                                or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                                operand_masked = True
+                                current_disassembly[i] = '<Global Offset>'
 
-                        disp = current_opcodes[4]
-                        if len(disp) == 1:
+                if (len(instr['disp']) > 1):
+                    offset = int(instr['disp'][1][2:].replace('L', ''), 16)
+                    if (IDAW.getseg(offset) is not None) and (offset != 0x400000):
+                        imm = current_opcodes[4]
+                        original_operand = imm
+                        operand_index = 4
+                        if len(imm) == 1:
                             current_opcodes[4] = '??'
                         else:
-                            current_opcodes[4] = '{{{}}}'.format(len(disp))
+                            current_opcodes[4] = '{{{}}}'.format(len(imm))
 
-        #   Register Masking
-        #-----------------------------------------------------------------------
-        regs = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'}.intersection(maskings)
-        masked_regs = []
-        for reg in regs:
-            for i in xrange(2, len(current_disassembly)):
-                operand = current_disassembly[i]
-                if self.reg_variants[reg].search(operand):
-                    current_disassembly[i] = self.reg_variants[reg].sub('\\1<Reg Masked>', operand)
-                    masked_reg = self.reg_variants[reg].search(operand).groups()[1]
+                        for i in xrange(2, len(current_disassembly)):
+                            if (('{:x}'.format(offset) in current_disassembly[i].lower())
+                                or (IDAW.LocByName(current_disassembly[i]) == offset)):
+                                operand_masked = True
+                                current_disassembly[i] = '<Global Offset>'
 
-                    opcode_masked = False
-                    current_modrm = current_opcodes[2]
-                    original_modrm = instr['modr/m'][0]
-                    if len(original_modrm) == 1:
-                        modrm = instr['modr/m'][1]
+                if (not operand_masked) and (original_operand != -1):
+                    current_opcodes[operand_index] = original_operand
 
-                        minreg = (modrm['mod'] << 6) | 0 | modrm['rm']
-                        minrm = (modrm['mod'] << 6) | (modrm['reg'] << 3) | 0
 
-                        if (operand == masked_reg) and (masked_reg in self.bin2reg[modrm['reg']]):
-                            opcode_masked = True
-                            if len(current_modrm) == 1:
-                                values = [minreg + (x << 3) for x in range(8)]
-                                current_opcodes[2] = ['{:02x}'.format(x) for x in values]
+            #   SP and BP displacement masking
+            #-----------------------------------------------------------------------
+            if len(instr['disp']) > 0:
+                if len(instr['modr/m']) > 1:
+                    #   Check the displacement value is from an esp offset
+                    modrm = instr['modr/m'][1]
+                    if 0b01 <= modrm['mod'] <= 0b10:
+                        mask_disp = ''
+                        #   EBP offset
+                        if ('bp' in maskings) and (modrm['rm'] == 0b101):
+                            mask_disp = 'bp'
+
+                        #   ESP offset
+                        if (('sp' in maskings) and (modrm['rm'] == 0b100)
+                            and (len(instr['sib']) > 1)):
+                            sib = instr['sib'][1]
+                            if sib['base'] == 0b100:
+                                mask_disp = 'sp'
+
+                        if mask_disp:
+                            for i in xrange(2, len(current_disassembly)):
+                                x = current_disassembly[i]
+                                mask_re = '{}+[^\]]+'.format(mask_disp)
+                                value = '{0}+<{1} Offset>'.format(mask_disp, mask_disp.upper())
+                                current_disassembly[i] = self.mask_operand(x, mask_re, value)
+
+                            disp = current_opcodes[4]
+                            if len(disp) == 1:
+                                current_opcodes[4] = '??'
                             else:
-                                current_opcodes[2] = list(set(['{:01x}?'.format(x) for x in range((modrm['mod'] << 2), (modrm['mod'] << 2) + 4)]))
+                                current_opcodes[4] = '{{{}}}'.format(len(disp))
 
-                        elif (modrm['rm'] == 0b100) and (modrm['mod'] in range(0, 3)):
-                            #   The instruction requires the SIB bytes
-                            if len(instr['sib'][0]) == 1:
-                                sib = instr['sib'][1]
+            #   Register Masking
+            #-----------------------------------------------------------------------
+            regs = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'}.intersection(maskings)
+            masked_regs = []
+            for reg in regs:
+                for i in xrange(2, len(current_disassembly)):
+                    operand = current_disassembly[i]
+                    if self.reg_variants[reg].search(operand):
+                        current_disassembly[i] = self.reg_variants[reg].sub('\\1<Reg Masked>', operand)
+                        masked_reg = self.reg_variants[reg].search(operand).groups()[1]
 
-                                minindex = (sib['ss'] << 6) | 0 | sib['base']
-                                minbase = (sib['ss'] << 6) | (sib['index'] << 3) | 0
-                                current_sib = current_opcodes[3]
-                                if (sib['index'] != 0b100) and (masked_reg in self.bin2reg[sib['index']]):
-                                    opcode_masked = True
-                                    if len(current_sib) == 1:
-                                        values = [minindex + (x << 3) for x in range(8)]
-                                        current_opcodes[3] = ['{:02x}'.format(x) for x in values]
-                                    else:
-                                        current_opcodes[3] = list(set(['{:01x}?'.format(x) for x in range((sib['ss'] << 2), (sib['ss'] << 2) + 4)]))
+                        opcode_masked = False
+                        current_modrm = current_opcodes[2]
+                        original_modrm = instr['modr/m'][0]
+                        if len(original_modrm) == 1:
+                            modrm = instr['modr/m'][1]
 
-                                elif masked_reg in self.bin2reg[sib['base']]:
-                                    opcode_masked = True
-                                    if len(current_sib) == 1:
-                                        values = [minbase + x for x in range(8)]
-                                        current_opcodes[3] = ['{:02x}'.format(x) for x in values]
-                                    else:
-                                        current_opcodes[3] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[3]])))
+                            minreg = (modrm['mod'] << 6) | 0 | modrm['rm']
+                            minrm = (modrm['mod'] << 6) | (modrm['reg'] << 3) | 0
 
-                        elif (not (modrm['rm'] == 0b100 and modrm['mod'] == 0b11)
-                                and (masked_reg in self.bin2reg[modrm['rm']])):
-                            opcode_masked = True
-                            if len(current_modrm) == 1:
-                                values = [minrm + x for x in range(8)]
-                                current_opcodes[2] = ['{:02x}'.format(x) for x in values]
-                            else:
-                                current_opcodes[2] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[2]])))
+                            if (operand == masked_reg) and (masked_reg in self.bin2reg[modrm['reg']]):
+                                opcode_masked = True
+                                if len(current_modrm) == 1:
+                                    values = [minreg + (x << 3) for x in range(8)]
+                                    current_opcodes[2] = ['{:02x}'.format(x) for x in values]
+                                else:
+                                    current_opcodes[2] = list(set(['{:01x}?'.format(x) for x in range((modrm['mod'] << 2), (modrm['mod'] << 2) + 4)]))
 
-                    else:
-                        binreg = [x for x in self.bin2reg if masked_reg in self.bin2reg[x]][0]
+                            elif (modrm['rm'] == 0b100) and (modrm['mod'] in range(0, 3)):
+                                #   The instruction requires the SIB bytes
+                                if len(instr['sib'][0]) == 1:
+                                    sib = instr['sib'][1]
 
-                        #   Values are part of the operand
-                        opcode = ord(instr['opcode'][0][-1]) - binreg
-                        if ((opcode in self.reg_exceptions)
-                            or ((len(instr['opcode'][0]) == 2)
-                                and (opcode == self.reg_exceptions[0][1])
-                                and (ord(instr['opcode'][0][0]) == self.reg_exceptions[0][0]))):
-                            opcode_masked = True
-                            values = range(opcode, opcode + 8)
-                            if len(instr['opcode'][0]) == 2:
-                                current_opcodes[1] = '{0:02x}({1})'.format(ord(instr['opcode'][0][0]),
-                                                                            '|'.join(['{:02x}'.format(x) for x in values]))
-                            else:
-                                current_opcodes[1] = ['{:02x}'.format(x) for x in values]
+                                    minindex = (sib['ss'] << 6) | 0 | sib['base']
+                                    minbase = (sib['ss'] << 6) | (sib['index'] << 3) | 0
+                                    current_sib = current_opcodes[3]
+                                    if (sib['index'] != 0b100) and (masked_reg in self.bin2reg[sib['index']]):
+                                        opcode_masked = True
+                                        if len(current_sib) == 1:
+                                            values = [minindex + (x << 3) for x in range(8)]
+                                            current_opcodes[3] = ['{:02x}'.format(x) for x in values]
+                                        else:
+                                            current_opcodes[3] = list(set(['{:01x}?'.format(x) for x in range((sib['ss'] << 2), (sib['ss'] << 2) + 4)]))
 
-                    if not opcode_masked:
-                        #   Opcode couldn't be masked, revert masked disassembly
-                        current_disassembly[i] = operand
+                                    elif masked_reg in self.bin2reg[sib['base']]:
+                                        opcode_masked = True
+                                        if len(current_sib) == 1:
+                                            values = [minbase + x for x in range(8)]
+                                            current_opcodes[3] = ['{:02x}'.format(x) for x in values]
+                                        else:
+                                            current_opcodes[3] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[3]])))
 
+                            elif (not (modrm['rm'] == 0b100 and modrm['mod'] == 0b11)
+                                    and (masked_reg in self.bin2reg[modrm['rm']])):
+                                opcode_masked = True
+                                if len(current_modrm) == 1:
+                                    values = [minrm + x for x in range(8)]
+                                    current_opcodes[2] = ['{:02x}'.format(x) for x in values]
+                                else:
+                                    current_opcodes[2] = list(sorted(set(['{}?'.format(x[0]) for x in current_opcodes[2]])))
+
+                        else:
+                            binreg = [x for x in self.bin2reg if masked_reg in self.bin2reg[x]][0]
+
+                            #   Values are part of the operand
+                            opcode = ord(instr['opcode'][0][-1]) - binreg
+                            if ((opcode in self.reg_exceptions)
+                                or ((len(instr['opcode'][0]) == 2)
+                                    and (opcode == self.reg_exceptions[0][1])
+                                    and (ord(instr['opcode'][0][0]) == self.reg_exceptions[0][0]))):
+                                opcode_masked = True
+                                values = range(opcode, opcode + 8)
+                                if len(instr['opcode'][0]) == 2:
+                                    current_opcodes[1] = '{0:02x}({1})'.format(ord(instr['opcode'][0][0]),
+                                                                                '|'.join(['{:02x}'.format(x) for x in values]))
+                                else:
+                                    current_opcodes[1] = ['{:02x}'.format(x) for x in values]
+
+                        if not opcode_masked:
+                            #   Opcode couldn't be masked, revert masked disassembly
+                            current_disassembly[i] = operand
+
+        except:
+            print '=' * 40
+            print ('[CASC] Unsupported masking on instruction. Please open an '
+                    'issue in the git repo with the below information:')
+            ddebug = [x for x in original_disassembly if x]
+            ddebug = '{0: <8}{1}'.format(ddebug[0], ', '.join(ddebug[1:]))
+            print '  disassembly: {}'.format(ddebug)
+            print '  opcodes: {}'.format(' '.join([x.encode('hex') for x in original_opcodes if x]))
+            pprint(instr)
+            print '=' * 40
+
+            raise
 
 
         #   Register masking exceptions
@@ -964,104 +997,117 @@ class IntelParser(CASCParser):
         }
         data = ''.join(original).decode('hex')
 
-        #   Look for prefix
-        prefix = ['', ]
-        pre_match = re.match(self.prefixes, data)
-        prefix_str = disassembly[0:disassembly.index(IDAW.GetMnem(ea))]
-        if pre_match:
-            prefix = [pre_match.groups()[0], prefix_str]
-
-        elif is_64bit():
-            pre_match = re.match(self.prefixes_x64, data)
+        try:
+            #   Look for prefix
+            prefix = ['', ]
+            pre_match = re.match(self.prefixes, data)
+            prefix_str = disassembly[0:disassembly.index(IDAW.GetMnem(ea))]
             if pre_match:
                 prefix = [pre_match.groups()[0], prefix_str]
 
-        instr['prefix'] = prefix
-        data = data[len(prefix[0]):]
+            elif is_64bit():
+                pre_match = re.match(self.prefixes_x64, data)
+                if pre_match:
+                    prefix = [pre_match.groups()[0], prefix_str]
 
-        #   Look for opcodes
-        opcodes = [data[0], IDAW.GetMnem(ea)]
-        opcode = ord(opcodes[0])
-        if ((opcode in self.two_opcodes)
-            and (ord(data[1]) in self.two_opcodes[opcode])):
-            opcodes[0] = data[0:2]
-        elif ((opcode in self.three_opcodes)
-            and (data[1:3] in self.three_opcodes[opcode])):
-            opcodes[0] = data[0:3]
-        elif ((opcode in self.two_opcodes_modrm)
-            and (ord(data[1]) in self.two_opcodes_modrm[opcode])):
-            opcodes[0] = data[0:2]
+            instr['prefix'] = prefix
+            data = data[len(prefix[0]):]
 
-        instr['opcode'] = opcodes
-        data = data[len(opcodes[0]):]
+            #   Look for opcodes
+            opcodes = [data[0], IDAW.GetMnem(ea)]
+            opcode = ord(opcodes[0])
+            if ((opcode in self.two_opcodes)
+                and (ord(data[1]) in self.two_opcodes[opcode])):
+                opcodes[0] = data[0:2]
+            elif ((opcode in self.three_opcodes)
+                and (data[1:3] in self.three_opcodes[opcode])):
+                opcodes[0] = data[0:3]
+            elif ((opcode in self.two_opcodes_modrm)
+                and (ord(data[1]) in self.two_opcodes_modrm[opcode])):
+                opcodes[0] = data[0:2]
 
-        #   Look for Mod R/M byte
-        modrm = ['', ]
-        getmodrm = False
-        if (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) > 0):
-            getmodrm = True
-        elif (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) == 0):
+            instr['opcode'] = opcodes
+            data = data[len(opcodes[0]):]
+
+            #   Look for Mod R/M byte
+            modrm = ['', ]
             getmodrm = False
-        elif (opcodes[0][0] == '\x01') and (len(opcodes[0]) == 1):
-            getmodrm = True
-        elif (ord(opcodes[0][0]) in self.noprefix_nomodrm) and (len(prefix[0]) == 0):
-            getmodrm = False
-        elif (len(opcodes[0]) == 1) and (ord(opcodes[0]) not in self.no_modrm):
-            getmodrm = True
-        elif ((len(opcodes[0]) > 1)
-            and (ord(opcodes[0][0]) in self.two_opcodes_modrm)
-            and (ord(opcodes[0][1]) in self.two_opcodes_modrm[ord(opcodes[0][0])])):
-            getmodrm = True
+            if (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) > 0):
+                getmodrm = True
+            elif (ord(opcodes[0][0]) in self.prefix_required_modrm) and (len(prefix[0]) == 0):
+                getmodrm = False
+            elif (opcodes[0][0] == '\x01') and (len(opcodes[0]) == 1):
+                getmodrm = True
+            elif (ord(opcodes[0][0]) in self.noprefix_nomodrm) and (len(prefix[0]) == 0):
+                getmodrm = False
+            elif (len(opcodes[0]) == 1) and (ord(opcodes[0]) not in self.no_modrm):
+                getmodrm = True
+            elif ((len(opcodes[0]) > 1)
+                and (ord(opcodes[0][0]) in self.two_opcodes_modrm)
+                and (ord(opcodes[0][1]) in self.two_opcodes_modrm[ord(opcodes[0][0])])):
+                getmodrm = True
 
-        if getmodrm:
-            modrm[0] = data[0]
-            data = data[1:]
-        instr['modr/m'] = modrm
-        if len(modrm[0]) == 1:
-            value = ord(modrm[0])
-            mod = (value >> 6) & 3
-            reg = (value >> 3) & 7  #operand 1
-            rm = value & 7          #operand 2
-            instr['modr/m'].append({'mod':mod, 'reg':reg, 'rm':rm})
-
-            #   Find out the Displacement size if it has one
-            #   Done for x86, 16bit would require some additional code
-            displacement = 0
-            if mod == 0b01:
-                displacement = 8
-            elif (mod == 0b10) or (mod == 0 and rm == 0b101):
-                displacement = 32
-
-            #   Find out if there is a SIB byte
-            if (mod < 0b11) and (rm == 0b100):
-                sib = data[0]
-                value = ord(sib)
-                ss = (value >> 6) & 3       #scale index: 2**ss
-                index = (value >> 3) & 7    #register scaled: e?x * (2**ss)
-                base = value & 7            #
-                instr['sib'] = [sib, {'ss':ss, 'index':index, 'base':base}]
+            if getmodrm:
+                modrm[0] = data[0]
                 data = data[1:]
+            instr['modr/m'] = modrm
+            if len(modrm[0]) == 1:
+                value = ord(modrm[0])
+                mod = (value >> 6) & 3
+                reg = (value >> 3) & 7  #operand 1
+                rm = value & 7          #operand 2
+                instr['modr/m'].append({'mod':mod, 'reg':reg, 'rm':rm})
 
-            #   Done for x86, 16bit would require some additional code
-            if displacement > 0:
-                disp = data[:displacement/8]
-                disp_str = '<I'
-                if displacement == 8:
-                    disp_str = 'B'
-                instr['disp'] = [disp, hex(struct.unpack(disp_str, disp)[0])]
-                data = data[displacement/8:]
+                #   Find out the Displacement size if it has one
+                #   Done for x86, 16bit would require some additional code
+                displacement = 0
+                if mod == 0b01:
+                    displacement = 8
+                elif (mod == 0b10) or (mod == 0 and rm == 0b101):
+                    displacement = 32
 
-        imm_map = {2 : '<H', 4 : '<I'}
-        if len(data) > 0:
-            if len(data) in imm_map:
-                value = hex(struct.unpack(imm_map[len(data)], data)[0])
-                instr['imm'] = [data, ]
-            elif len(data) == 1:
-                value = hex(ord(data))
-            else:
-                print '[Error]: immediate value is not 1, 2, or 4 bytes'
+                #   Find out if there is a SIB byte
+                if (mod < 0b11) and (rm == 0b100):
+                    sib = data[0]
+                    value = ord(sib)
+                    ss = (value >> 6) & 3       #scale index: 2**ss
+                    index = (value >> 3) & 7    #register scaled: e?x * (2**ss)
+                    base = value & 7            #
+                    instr['sib'] = [sib, {'ss':ss, 'index':index, 'base':base}]
+                    data = data[1:]
 
-            instr['imm'] = [data, value]
+                #   Done for x86, 16bit would require some additional code
+                if displacement > 0:
+                    disp = data[:displacement/8]
+                    disp_str = '<I'
+                    if displacement == 8:
+                        disp_str = 'B'
+                    instr['disp'] = [disp, hex(struct.unpack(disp_str, disp)[0])]
+                    data = data[displacement/8:]
+
+            imm_map = {2 : '<H', 4 : '<I'}
+            if len(data) > 0:
+                if len(data) in imm_map:
+                    value = hex(struct.unpack(imm_map[len(data)], data)[0])
+                    instr['imm'] = [data, ]
+                elif len(data) == 1:
+                    value = hex(ord(data))
+                else:
+                    print '[Error]: immediate value is not 1, 2, or 4 bytes'
+
+                instr['imm'] = [data, value]
+        except:
+            print '=' * 40
+            print ('[CASC] Unsupported instruction parsing. Please open an '
+                    'issue in the git repo with the below information:')
+            print ( '  EA: 0x{}\n'
+                    '  Instruction Size: {}\n'
+                    '  Disassembly: {}\n'
+                    '  Opcodes: {}').format(ea, size, disassembly, ' '.join(original))
+            pprint(instr)
+            print '=' * 40
+
+            raise
 
         return instr
 
@@ -2269,8 +2315,8 @@ class ClamAVSigCreatorPlugin(plugin_t):
         #   Currently only supports intel_x86
         if get_file_type() not in [1, 6, 9]:
             msg_str = '{0} does not support this file type.\n'
-            msg(msg_str.format(self.wanted_name))
-            return PLUGIN_SKIP
+            IDAW.msg(msg_str.format(self.wanted_name))
+            return IDAW.PLUGIN_SKIP
 
         #   Check to see if we've configured the plug-in yet.
         if not clamav_sig_creator_plugin:
