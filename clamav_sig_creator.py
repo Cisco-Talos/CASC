@@ -728,9 +728,13 @@ class IntelParser(CASCParser):
     def mask_instruction(self, ea, maskings):
         instr = self.parse_instruction(ea)
         m_disassembly = ''
+        default = (instr['disassembly'], ' '.join(instr['bytes']))
+
+        if ('prefix' not in instr) or ('opcode' not in instr):
+            return default
+
         m_opcodes = [(instr['prefix'][0] + instr['opcode'][0]).encode('hex')]
 
-        default = (instr['disassembly'], ' '.join(instr['bytes']))
 
         #   Call instructions
         #--------------------
@@ -980,6 +984,10 @@ class IntelParser(CASCParser):
         return (current_disassembly, ' '.join(opcodes))
 
     def parse_instruction(self, ea):
+        instruction = IDAW.DecodeInstruction(ea)
+        if not instruction:
+            return {'address' : ea, 'bytes' : ['{:02x}'.format(IDAW.Byte(ea))],
+                    'disassembly' : 'db 0x{0:02}'.format(Byte(ea))}
         size = IDAW.DecodeInstruction(ea).size
         original = ['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)]
         disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
@@ -1148,8 +1156,9 @@ class Assembly(object):
         while ea < end_ea:
             #   Check if it is in a function, if so it can be decoded without
             #   any issues arising, if not, it should be added as data bytes
-            if IDAW.get_func(ea):
-                instr = IDAW.DecodeInstruction(ea)
+            instr = IDAW.DecodeInstruction(ea)
+            if instr:
+                #instr = IDAW.DecodeInstruction(ea)
                 self.original_data.append(instr)
 
                 disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
