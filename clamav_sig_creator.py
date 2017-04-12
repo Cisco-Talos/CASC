@@ -19,7 +19,7 @@
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
 #
-#   Last revision: March 2017
+#   Last revision: April 2017
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
 #
@@ -1055,7 +1055,7 @@ class IntelParser(CASCParser):
                 and (ord(opcodes[0][1]) in self.two_opcodes_modrm[ord(opcodes[0][0])])):
                 getmodrm = True
 
-            if getmodrm:
+            if getmodrm and (len(data) > 0):
                 modrm[0] = data[0]
                 data = data[1:]
             instr['modr/m'] = modrm
@@ -1224,7 +1224,76 @@ class Assembly(object):
                 opcodes.append(instr_opcodes)
 
         self.mnemonics = mnemonics
-        self.opcodes = opcodes
+        self.opcodes = self.fixup_opcodes(opcodes)
+
+    def fixup_opcodes(self, opcodes):
+        sig_format = (  '('
+                          '[\da-fA-F]{2}|'
+                          '[\da-fA-F]\?|'
+                          '\?[\da-fA-F]|'
+                          '\?\?|'
+                          '\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))\}|'
+                          '\*|'
+                          '(?:!|)\((?:[\da-fA-F\?]{2})+(?:\|(?:[\da-fA-F\?]{2})+)+\)|'
+                          '\((?:B|L|W)\)|'
+                          '\[\d+\-\d+\]|'
+                          '\s+'
+                      '?)')
+
+        _opcodes = [[x for x in re.findall(sig_format, line) if not re.match(r'^\s+$', x)] for line in opcodes]
+        for i in xrange(len(_opcodes)):
+            cur_data = _opcodes[i]
+            prev = -1
+            prev_data = []
+            next = -1
+            next_data = []
+
+            if (i - 1) >= 0:
+                prev = i - 1
+                prev_data = _opcodes[prev]
+
+            if (i + 1) < len(_opcodes):
+                next = i + 1
+                next_data = _opcodes[next]
+
+            #   Check current opcodes
+            data = prev_data + cur_data + next_data
+            for k in xrange(len(data) - len(next_data)):
+                replace_index = -1
+                if re.match('^\{\d+\}$', data[k]):
+                    replace = int(re.match('\{(\d+)\}', data[k]).group(1))
+                    replace = ' '.join(replace * ['??'])
+                    #   Ensure that there are two bytes before and after
+                    if (k-2 < 0) and  (k+2 >= len(data)):
+                        replace_index = k
+
+                    else:
+                        #   Check bytes before for valid hex strings
+                        before_check = 0
+                        for j in  list({max(k-2, 0), max(k-1, 0)}):
+                            if re.match('[\da-fA-F]{2}', data[j]):
+                                before_check += 1
+
+                        #   Check bytes after for valid hex strings
+                        after_check = 0
+                        for j in [k+1, k+2]:
+                            if j >= len(data):
+                                continue
+                            if re.match('[\da-fA-F]{2}', data[j]):
+                                after_check += 1
+
+                        if 2 not in [before_check, after_check]:
+                            replace_index = k
+
+                if replace_index != -1:
+                    if k < len(prev_data):
+                        _opcodes[prev][k] = replace
+                    elif k < (len(prev_data) + len(cur_data)):
+                        _opcodes[i][k - len(prev_data)] = replace
+                    else:
+                        _opcodes[next][k - len(prev_data) - len(cur_data)] = replace
+                        
+        return [' '.join(x) for x in _opcodes]
 
     def mask_opcodes_tuple(self, options):
         self.mask_options = options
