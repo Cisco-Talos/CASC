@@ -695,8 +695,8 @@ class IntelParser(CASCParser):
                                 range(0x40, 0x50) + range(0x51, 0x6c) + \
                                 range(0x70, 0x77) + [0x7f, 0xa3, 0xa4, 0xa5] + \
                                 range(0xab, 0xb8) + range(0xba, 0xc8) + \
-                                range(0xd2, 0xf0) + range(0xf1, 0xf5) + \
-                                range(0xf6, 0xff)}
+                                range(0xd2, 0xf0) + range(0x90, 0xa0) + \
+                                range(0xf1, 0xf5) + range(0xf6, 0xff)}
 
     no_modrm = [0x04, 0x05, 0x07, 0x0c, 0x0e, 0x1c, 0x1d, 0x1e, 0x24, 0x25,
                 0x27, 0x34, 0x35, 0x37, 0x3c, 0x3d, 0x3f] + range(0x40, 0x50) + \
@@ -1108,10 +1108,10 @@ class IntelParser(CASCParser):
             print '=' * 40
             print ('[CASC] Unsupported instruction parsing. Please open an '
                     'issue in the git repo with the below information:')
-            print ( '  EA: 0x{}\n'
-                    '  Instruction Size: {}\n'
-                    '  Disassembly: {}\n'
-                    '  Opcodes: {}').format(ea, size, disassembly, ' '.join(original))
+            print ( '  EA: 0x{0:x}\n'
+                    '  Instruction Size: {1}\n'
+                    '  Disassembly: {2}\n'
+                    '  Opcodes: {3}').format(ea, size, disassembly, ' '.join(original))
             pprint(instr)
             print '=' * 40
 
