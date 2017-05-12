@@ -19,7 +19,7 @@
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
 #
-#   Last revision: April 2017
+#   Last revision: May 2017
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
 #
