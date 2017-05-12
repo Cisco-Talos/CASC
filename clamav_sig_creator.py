@@ -494,7 +494,7 @@ class CASCMask(object):
     def get_masking(self):
         return []
 
-    def set_masking(self):
+    def set_masking(self, masking):
         pass
 
     def register_signals(self, apply_mask_func, custom_ui_func):
@@ -646,6 +646,19 @@ class CASCParser(object):
 
     def setEnable(self, gui_obj, is_enabled=False):
         pass
+
+    def mask_instruction(self, ea, maskings):
+        instruction = IDAW.DecodeInstruction(ea)
+        if not instruction:
+            return ('db 0x{0:02}'.format(Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
+
+        size = IDAW.DecodeInstruction(ea).size
+        original = ' '.join(['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)])
+        disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
+        if ';' in disassembly:
+            disassembly = disassembly[:disassembly.index(';')].rstrip()
+
+        return (disassembly, original)
 
 class IntelParser(CASCParser):
     prefixes = '^([\xf0\xf3\xf2\x2e\x36\x3e\x26\x64\x65\x66\x67]{1,4})'
@@ -1292,7 +1305,7 @@ class Assembly(object):
                         _opcodes[i][k - len(prev_data)] = replace
                     else:
                         _opcodes[next][k - len(prev_data) - len(cur_data)] = replace
-                        
+
         return [' '.join(x) for x in _opcodes]
 
     def mask_opcodes_tuple(self, options):
