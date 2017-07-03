@@ -60,7 +60,7 @@ Once the Python script is copied to the IDA Pro plug-ins folder, open IDA Pro
 with a sample. There are two ways of opening the plug-in.
 
  -  IDA Pro’s Plug-in Menu (Edit -> Plugins -> ClamAV Signature Creator
- -  Press ``\``` (backtick)
+ -  Press \` (backtick)
 
 Once the plug-in is opened you will be able to view sub signatures created in 
 the past and saved in the IDB, add new misc ClamAV sub signatures, and add sub 
@@ -87,9 +87,9 @@ creating a signature from. Either highlight the code or position and click your
 cursor in the basic block of interest, then:
 
 - Within the CASC plug-in window, press Ctrl+Ins
-- Within the CASC plug-in window, right click and select “Insert Assembly”
+- Within the CASC plug-in window, right click and select "Insert Assembly"
  -  Within the IDA View window by
-     *  Pressing Ctrl+`
+     *  Pressing Ctrl+\`
      *  Right click and select "Add Assembly to ClamAV Sig Creator…"
 
 The Assembly to Signature window will allow you to insert notes for the sub 
@@ -97,7 +97,7 @@ signature, apply various masking options, and scroll through the
 opcodes/assembly associated with that sub signature.
 
 Selecting a masking option will change the opcodes and assembly text if the 
-masking option can be applied. Selecting “Customize” will allow you to edit the
+masking option can be applied. Selecting "Customize" will allow you to edit the
 opcodes (note the assembly area will not update for any customizations made). 
 If you uncheck “Customize” then all previously applied masking options will be 
 applied and the customizations will be deleted.
@@ -108,12 +108,12 @@ If a masking option is selected but the opcodes and assembly don’t change:
 	ESP Offsets
         This will apply to [esp+offset] operands only
 	EBP Offsets
-    This will apply to [ebp+offset] operands only
+        This will apply to [ebp+offset] operands only
 
 ### Absolute Calls
 IDA might display the disassembly as 
     
-`        call      memset`
+`call      memset`
 
 However, that instruction may be a call to a function within the sample 
     that directly calls or jumps to the actual memset function. If that is the 
