@@ -796,7 +796,7 @@ class IntelParser(CASCParser):
             prefix = instr['prefix'][1]
         current_disassembly = [prefix, instr['opcode'][1]] + operands
         original_disassembly = current_disassembly
-        original_operands = current_opcodes
+        original_opcodes = current_opcodes
 
         try:
             #   Global offset instructions
