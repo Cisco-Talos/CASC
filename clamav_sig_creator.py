@@ -19,7 +19,7 @@
 #   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #   MA 02110-1301, USA.
 #
-#   Last revision: March 2017
+#   Last revision: May 2017
 #   This IDA Pro plug-in will aid in creating ClamAV ndb and ldb signatures
 #   from data within the IDB the user selects.
 #
@@ -494,7 +494,7 @@ class CASCMask(object):
     def get_masking(self):
         return []
 
-    def set_masking(self):
+    def set_masking(self, masking):
         pass
 
     def register_signals(self, apply_mask_func, custom_ui_func):
@@ -647,6 +647,19 @@ class CASCParser(object):
     def setEnable(self, gui_obj, is_enabled=False):
         pass
 
+    def mask_instruction(self, ea, maskings):
+        instruction = IDAW.DecodeInstruction(ea)
+        if not instruction:
+            return ('db 0x{0:02}'.format(Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
+
+        size = IDAW.DecodeInstruction(ea).size
+        original = ' '.join(['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)])
+        disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
+        if ';' in disassembly:
+            disassembly = disassembly[:disassembly.index(';')].rstrip()
+
+        return (disassembly, original)
+
 class IntelParser(CASCParser):
     prefixes = '^([\xf0\xf3\xf2\x2e\x36\x3e\x26\x64\x65\x66\x67]{1,4})'
     prefixes_x64 = '^((?:[\xf0\xf3\xf2\x2e\x36\x3e\x26\x64\x65\x66\x67]|\x0f(?:\x38|\x3a){0,1}){1,4})'
@@ -695,8 +708,8 @@ class IntelParser(CASCParser):
                                 range(0x40, 0x50) + range(0x51, 0x6c) + \
                                 range(0x70, 0x77) + [0x7f, 0xa3, 0xa4, 0xa5] + \
                                 range(0xab, 0xb8) + range(0xba, 0xc8) + \
-                                range(0xd2, 0xf0) + range(0xf1, 0xf5) + \
-                                range(0xf6, 0xff)}
+                                range(0xd2, 0xf0) + range(0x90, 0xa0) + \
+                                range(0xf1, 0xf5) + range(0xf6, 0xff)}
 
     no_modrm = [0x04, 0x05, 0x07, 0x0c, 0x0e, 0x1c, 0x1d, 0x1e, 0x24, 0x25,
                 0x27, 0x34, 0x35, 0x37, 0x3c, 0x3d, 0x3f] + range(0x40, 0x50) + \
@@ -728,9 +741,13 @@ class IntelParser(CASCParser):
     def mask_instruction(self, ea, maskings):
         instr = self.parse_instruction(ea)
         m_disassembly = ''
+        default = (instr['disassembly'], ' '.join(instr['bytes']))
+
+        if ('prefix' not in instr) or ('opcode' not in instr):
+            return default
+
         m_opcodes = [(instr['prefix'][0] + instr['opcode'][0]).encode('hex')]
 
-        default = (instr['disassembly'], ' '.join(instr['bytes']))
 
         #   Call instructions
         #--------------------
@@ -779,7 +796,7 @@ class IntelParser(CASCParser):
             prefix = instr['prefix'][1]
         current_disassembly = [prefix, instr['opcode'][1]] + operands
         original_disassembly = current_disassembly
-        original_operands = current_opcodes
+        original_opcodes = current_opcodes
 
         try:
             #   Global offset instructions
@@ -980,6 +997,10 @@ class IntelParser(CASCParser):
         return (current_disassembly, ' '.join(opcodes))
 
     def parse_instruction(self, ea):
+        instruction = IDAW.DecodeInstruction(ea)
+        if not instruction:
+            return {'address' : ea, 'bytes' : ['{:02x}'.format(IDAW.Byte(ea))],
+                    'disassembly' : 'db 0x{0:02}'.format(Byte(ea))}
         size = IDAW.DecodeInstruction(ea).size
         original = ['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)]
         disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
@@ -1047,7 +1068,7 @@ class IntelParser(CASCParser):
                 and (ord(opcodes[0][1]) in self.two_opcodes_modrm[ord(opcodes[0][0])])):
                 getmodrm = True
 
-            if getmodrm:
+            if getmodrm and (len(data) > 0):
                 modrm[0] = data[0]
                 data = data[1:]
             instr['modr/m'] = modrm
@@ -1100,10 +1121,10 @@ class IntelParser(CASCParser):
             print '=' * 40
             print ('[CASC] Unsupported instruction parsing. Please open an '
                     'issue in the git repo with the below information:')
-            print ( '  EA: 0x{}\n'
-                    '  Instruction Size: {}\n'
-                    '  Disassembly: {}\n'
-                    '  Opcodes: {}').format(ea, size, disassembly, ' '.join(original))
+            print ( '  EA: 0x{0:x}\n'
+                    '  Instruction Size: {1}\n'
+                    '  Disassembly: {2}\n'
+                    '  Opcodes: {3}').format(ea, size, disassembly, ' '.join(original))
             pprint(instr)
             print '=' * 40
 
@@ -1148,8 +1169,9 @@ class Assembly(object):
         while ea < end_ea:
             #   Check if it is in a function, if so it can be decoded without
             #   any issues arising, if not, it should be added as data bytes
-            if IDAW.get_func(ea):
-                instr = IDAW.DecodeInstruction(ea)
+            instr = IDAW.DecodeInstruction(ea)
+            if instr:
+                #instr = IDAW.DecodeInstruction(ea)
                 self.original_data.append(instr)
 
                 disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
@@ -1215,7 +1237,76 @@ class Assembly(object):
                 opcodes.append(instr_opcodes)
 
         self.mnemonics = mnemonics
-        self.opcodes = opcodes
+        self.opcodes = self.fixup_opcodes(opcodes)
+
+    def fixup_opcodes(self, opcodes):
+        sig_format = (  '('
+                          '[\da-fA-F]{2}|'
+                          '[\da-fA-F]\?|'
+                          '\?[\da-fA-F]|'
+                          '\?\?|'
+                          '\{(?:\d+|\-\d+|\d+\-|(?:\d+)\-(?:\d+))\}|'
+                          '\*|'
+                          '(?:!|)\((?:[\da-fA-F\?]{2})+(?:\|(?:[\da-fA-F\?]{2})+)+\)|'
+                          '\((?:B|L|W)\)|'
+                          '\[\d+\-\d+\]|'
+                          '\s+'
+                      '?)')
+
+        _opcodes = [[x for x in re.findall(sig_format, line) if not re.match(r'^\s+$', x)] for line in opcodes]
+        for i in xrange(len(_opcodes)):
+            cur_data = _opcodes[i]
+            prev = -1
+            prev_data = []
+            next = -1
+            next_data = []
+
+            if (i - 1) >= 0:
+                prev = i - 1
+                prev_data = _opcodes[prev]
+
+            if (i + 1) < len(_opcodes):
+                next = i + 1
+                next_data = _opcodes[next]
+
+            #   Check current opcodes
+            data = prev_data + cur_data + next_data
+            for k in xrange(len(data) - len(next_data)):
+                replace_index = -1
+                if re.match('^\{\d+\}$', data[k]):
+                    replace = int(re.match('\{(\d+)\}', data[k]).group(1))
+                    replace = ' '.join(replace * ['??'])
+                    #   Ensure that there are two bytes before and after
+                    if (k-2 < 0) and  (k+2 >= len(data)):
+                        replace_index = k
+
+                    else:
+                        #   Check bytes before for valid hex strings
+                        before_check = 0
+                        for j in  list({max(k-2, 0), max(k-1, 0)}):
+                            if re.match('[\da-fA-F]{2}', data[j]):
+                                before_check += 1
+
+                        #   Check bytes after for valid hex strings
+                        after_check = 0
+                        for j in [k+1, k+2]:
+                            if j >= len(data):
+                                continue
+                            if re.match('[\da-fA-F]{2}', data[j]):
+                                after_check += 1
+
+                        if 2 not in [before_check, after_check]:
+                            replace_index = k
+
+                if replace_index != -1:
+                    if k < len(prev_data):
+                        _opcodes[prev][k] = replace
+                    elif k < (len(prev_data) + len(cur_data)):
+                        _opcodes[i][k - len(prev_data)] = replace
+                    else:
+                        _opcodes[next][k - len(prev_data) - len(cur_data)] = replace
+
+        return [' '.join(x) for x in _opcodes]
 
     def mask_opcodes_tuple(self, options):
         self.mask_options = options
