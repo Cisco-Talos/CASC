@@ -2220,7 +2220,10 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
         sig = self.signature_line_edit.text()
         self._add_signature(sig)
         self.signature_line_edit.setText("")
-        self.netnode[len(self.netnode.keys())] = sig
+        key = len(self.netnode.keys())
+        while key in self.netnode.keys():
+            key += 1
+        self.netnode[key] = sig
 
     def _add_signature(self, sig):
         signature = parse_signature(sig)
