@@ -2266,7 +2266,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
                     item2.subsignature_name = "$subsig_%02x" % i
                     self.subsignatures_list.addItem(item2)
             elif isinstance(item.parsed_signature, NdbSignature):
-                pass
+                self.match_label.setText("No match")
 
             print_console("Signature selected: %s" % item.text())
             self.yara_scanner.scan(item.yara_rule)
@@ -2284,6 +2284,11 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
                 print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
                 SetColor(ea, CIC_ITEM, SIGALIYZER_COLOR_HIGHLIGHTED)
+        except KeyError:
+            self.match_label.setText("No match")
+            for ea, color in self.previous_colors:
+                SetColor(ea, CIC_ITEM, color)
+            self.previous_colors = []
         except IndexError:
             log.exception("While selecting subsignature")
 
