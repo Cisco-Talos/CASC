@@ -96,7 +96,7 @@ def fetch_linux_dependencies(path):
 
 def get_plugin_git_version():
     try:
-        return subprocess.check_output(["git", "tag"]).strip() or "devel"
+        return subprocess.check_output(["git", "describe", "--tags"]).split("\n")[0].strip() or "devel"
     except OSError:
         return "unknown"
 
