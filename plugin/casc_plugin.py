@@ -85,7 +85,7 @@ except ImportError as err:
     print("[CASCPlugin] Error loading dependencies for Sigalyzer: {}".format(str(err)))
     sigalyzer_required_modules_loaded = False
 
-COLOR_RED = 0x2020c0
+SIGALYZER_COLOR_HIGHLIGHTED = 0x4dd811
 
 #   Global Variables
 #-------------------------------------------------------------------------------
@@ -2157,7 +2157,7 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 #   Sigalyzer Widget
 #-------------------------------------------------------------------------------
 
-class SigalyzerWidget(QtWidgets.QWidget):
+class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
     def __init__(self):
         super(QtWidgets.QWidget, self).__init__()
         self.previous_colors = []
@@ -2168,6 +2168,7 @@ class SigalyzerWidget(QtWidgets.QWidget):
         for idx in sorted(self.netnode.keys()):
             sig = self.netnode[idx]
             self._add_signature(sig)
+        self.hook()
 
     def PopulateWidget(self):
         signatures_widget = QtWidgets.QFrame()
@@ -2278,7 +2279,7 @@ class SigalyzerWidget(QtWidgets.QWidget):
             for ea in Heads(match["ea"], match["ea"] + len(match["data"])):
                 print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
-                SetColor(ea, CIC_ITEM, COLOR_RED)
+                SetColor(ea, CIC_ITEM, SIGALIYZER_COLOR_HIGHLIGHTED)
         except IndexError:
             log.exception("While selecting subsignature")
 
@@ -2294,8 +2295,15 @@ class SigalyzerWidget(QtWidgets.QWidget):
             for ea in Heads(strings[0]["ea"], strings[0]["ea"] + len(strings[0]["data"])):
                 print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
-                SetColor(ea, CIC_ITEM, COLOR_RED)
-            
+                SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+
+    def saving(self):
+        for ea, color in self.previous_colors:
+            SetColor(ea, CIC_ITEM, color)
+
+    def saved(self):
+        for ea, color in self.previous_colors:
+            SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
 
 #   Main Plug-in Form Class
 #-------------------------------------------------------------------------------
