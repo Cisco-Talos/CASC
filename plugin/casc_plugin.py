@@ -2218,18 +2218,18 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
 
     def add_signature(self):
         sig = self.signature_line_edit.text()
-        self._add_signature(sig)
-        self.signature_line_edit.setText("")
-        key = len(self.netnode.keys())
-        while key in self.netnode.keys():
-            key += 1
-        self.netnode[key] = sig
+        if self._add_signature(sig):
+            self.signature_line_edit.setText("")
+            key = len(self.netnode.keys())
+            while key in self.netnode.keys():
+                key += 1
+            self.netnode[key] = sig
 
     def _add_signature(self, sig):
         signature = parse_signature(sig)
         if signature is None:
             idaapi.warning("Error parsing signature")
-            return
+            return False
         signature.target_type = 0 #Don't check for PE header
         item = QtWidgets.QListWidgetItem(sig)
         item.parsed_signature = signature
@@ -2237,6 +2237,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
         if isinstance(signature, LdbSignature):
             pass
         self.signatures_list.addItem(item)
+        return True
 
     def remove_signature(self):
         row = self.signatures_list.currentRow()
