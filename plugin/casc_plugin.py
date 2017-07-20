@@ -78,6 +78,7 @@ try:
     from casc.sigalyzer.clamav import AbsoluteOffset, EPRelativeOffset, \
         AnyOffset, InSectionOffset, SectionRelativeOffset, \
         EOFRelativeOffset
+    from ida_loader import get_fileregion_ea
 
     sigalyzer_required_modules_loaded = True
 except ImportError as err:
@@ -1422,7 +1423,7 @@ class YaraScanner():
 
     def _file_offset_to_yara_offset(self, file_offset):
         ea = get_fileregion_ea(file_offset)
-        if start_ea == BADADDR:
+        if ea == BADADDR:
             raise RuntimeError("Cannot find ea for absolute file offset %d" % file_offset)
         return self._ea_to_yara_offset(ea)
 
@@ -1433,7 +1434,7 @@ class YaraScanner():
             if offset.start == 0 and offset.end is None:
                 return "$%s" % rulename
             elif offset.end is None:
-                return "$%s at %d" % (rulename, self._file_offset_to_yara_offset(offset.offset))
+                return "$%s at %d" % (rulename, self._file_offset_to_yara_offset(offset.start))
             else:
                 start = self._file_offset_to_yara_offset(offset.offset)
                 end = self._file_offset_to_yara_offset(offset.offset + offset.shift)
