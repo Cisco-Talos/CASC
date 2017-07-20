@@ -14,16 +14,38 @@ engineers in creating ClamAV NDB and LDB signatures from IDA Pro's Disassembly
 or Strings view.
 
 CASC should run on any platform that supports IDA Pro 6.7 and higher.
-Limited functionality is available for IDA Pro 6.6
+Limited functionality is available for IDA Pro 6.6.
+The signature analyzer part of CASC has only been tested on IDA 6.9.
 
 README with pictures can be found on our wiki:
     [https://github.com/vrtadmin/casc/wiki](https://github.com/vrtadmin/casc/wiki)
 
+## Building
+You need a working build system to build the yara-python library. On Ubuntu,
+you can get that by installing `sudo apt-get install -y build-essential
+libpython2.7-dev:i386 gcc-multilib`.
+
+Run `python package.py --output <output-dir>` to build the plugin zip archives.
+
 ## Installation
 
-The ClamAV Signature Creator (CASC) is easy to install. Simply copy and paste 
-the Python script (`clamav_sig_creator.py`) to IDA Pro’s plug-in directory
+The ClamAV Signature Creator (CASC) is easy to install. You simply have to
+unzip one of the generated zip archives into the IDA Pro installation directory
+(not inside _plugins_ directory, but the one where _idaq_ is located). Which
+archive you may want to use depends on your python configuration. If you use
+the system's python, choose the _casc-\*-universal.zip_ package, and then
+install the packages _ply_ and _yara_ via _pip_ or your system packages (When you
+install _yara_ via _pip_, you need to take great care to have pip build 32 bit
+libraries. Do that by exporting the environment variables _CFLAGS=-m32_
+_CXXFLAGS=-m32_ _LDFLAGS=-m32_ before you invoke pip).
 
+If you are using IDA's bundled python, you can choose one of the
+_casc-\*-fat.zip_ archives, depending on your operating system. They have all
+the libraries bundled which you would otherwise install with pip. 
+
+In case you don't want to install additional libraries, the plugin will degrade
+gracefully and hide the _"Analyze"_ functionality which requires the libraries to
+be installed.
 
 | Operating System               | IDA Pro Plug-in Path                     |
 | ------------------------------ | -----------------------------------------|
@@ -144,8 +166,20 @@ Once the “Create ClamAV Signature” button is click a dialog box with a
 formatted email will be displayed for the user to send to ClamAV’s 
 community-sigs list. Selecting the [community-sigs@lists.clamav.net](community-sigs@lists.clamav.net) hyperlink  is a mailto: link. It will attempt to copy the signature information displayed  to the systems default mail client. Keep in mind if any special characters are  used then the email’s contents may not be correct and will need to be manually  copied over.
 
-## Bugs and Support
+## Analyzing ClamAV signatures
+In the main plugin panel, use the tabbed pane to switch to the _"Analyze"_
+mode. Note that this tab is not available if you don't have the required
+libraries installed.  You can now paste a ClamAV .ldb or .ndb signature in the
+text field above the _"Add Signature"_ button. Once you then click _Add
+signature_, the signature will appear in the left top list (if it was well
+formatted and parsed by the plugin, otherwise check the IDA Pro output window
+for errors). Now you can double-click on the signature in the list. For .ndb
+signatures this will directly bring you to the matched part of the binary,
+and color the match in red. For .ldb signatures, the subsignatures will be
+displayed in the right list element. If you double-click any of the sub
+signature entries, it will bring you to the match for this subsignature.
 
+## Bugs and Support
 There is no support provided with CASC. 
 
 If you think you've found a bug, please report it at:
