@@ -15,7 +15,7 @@ def _to_yara_pattern(sig):
     if isinstance(sig, FixedString):
         return " ".join(x.value for x in sig.fixed_bytes)
     elif isinstance(sig, Skip):
-        min = "" if sig.min == 0 else "%d" % sig.min
+        min = "{:d}".format(sig.min)
         max = "" if sig.max == Skip.INFINITY else "%d" % sig.max
         return "[%s-%s]" % (min, max)
     elif isinstance(sig, ShortSkip):
