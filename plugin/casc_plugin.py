@@ -2162,7 +2162,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
         super(QtWidgets.QWidget, self).__init__()
         self.previous_colors = []
         self.yara_scanner = YaraScanner(self.yara_match)
-        self.matches = []
+        self.matches = {}
         self.PopulateWidget()
         self.netnode = netnode.Netnode("$ com.cisco.casc.sigalyzer")
         for idx in sorted(self.netnode.keys()):
@@ -2283,7 +2283,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
             for ea in Heads(match["ea"], match["ea"] + len(match["data"])):
                 print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
-                SetColor(ea, CIC_ITEM, SIGALIYZER_COLOR_HIGHLIGHTED)
+                SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
         except KeyError:
             self.match_label.setText("No match")
             for ea, color in self.previous_colors:
