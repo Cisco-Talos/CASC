@@ -63,7 +63,7 @@ try:
         import ply
         import netnode
     except ImportError:
-        #TODO: This is a hack to load the dependencies installed into 
+        #TODO: This is a hack to load the dependencies installed into
         #<IDAROOT>/python/lib/python2.7/site-packages. Make this prettier in the future.
         import os
         import site
@@ -102,19 +102,28 @@ class IDAWrapper(object):
     '''
     Class to wrap functions that are not thread safe
     '''
+    mapping = {
+        'get_tform_type' : 'get_widget_type',
+    }
+    def __init__(self):
+        self.version = idaapi.IDA_SDK_VERSION
+
     def __getattribute__(self, name):
         default = '[1st] default'
 
-        val = getattr(idaapi, name, default)
-        if val == default:
-            val = getattr(idc, name, default)
+        if (idaapi.IDA_SDK_VERSION >= 700) and (name in IDAWrapper.mapping):
+            name = IDAWrapper.mapping[name]
 
+        val = getattr(idaapi, name, default)
         if val == default:
             val = getattr(idautils, name, default)
 
         if val == default:
+            val = getattr(idc, name, default)
+
+        if val == default:
             msg = 'Unable to find {}'.format(name)
-            print msg
+            idaapi.execute_ui_requests((FIRSTUI.Requests.Print(msg),))
             return
 
         if hasattr(val, '__call__'):
@@ -1452,7 +1461,7 @@ class YaraScanner():
         elif isinstance(offset, InSectionOffset):
             segments = list(Segments())
             #TODO: Segments in IDA Pro are probably not exactly the same thing as
-            # what ClamAV refers to as sections ... 
+            # what ClamAV refers to as sections ...
             start = self._ea_to_yara_offset(SegStart(segments[offset.section]))
             end = self._ea_to_yara_offset(SegEnd(segments[offset.section]))
             return "$%s in (%d..%d)" % (start, end)
@@ -1473,7 +1482,7 @@ class YaraScanner():
     def _callback(self, data):
         if data["matches"]:
             strings = [
-                {"ea": self._offset_to_address(x[0]),       
+                {"ea": self._offset_to_address(x[0]),
                  "data": x[2],
                  "identifier": x[1]} for  x in data["strings"]]
             self.callback(strings)
@@ -2173,7 +2182,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
     def PopulateWidget(self):
         signatures_widget = QtWidgets.QFrame()
         layout = QtWidgets.QVBoxLayout()
-        
+
         layout.addWidget(QtWidgets.QLabel('Signatures'))
         self.signatures_list = QtWidgets.QListWidget()
         layout.addWidget(self.signatures_list)
