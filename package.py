@@ -11,6 +11,8 @@ import urllib
 import shutil
 import errno    
 
+from functools import partial
+
 
 def mkdir_p(path):
     try:
@@ -34,25 +36,34 @@ class GitPythonDependency(object):
         cmd = ("git", "clone", self.url, self.dir)
         subprocess.check_call(cmd)
 
-    def install(self, path):
+    def install(self, path, bits):
         env = {"PYTHONPATH": os.path.join(path, "lib/python2.7/site-packages")}
         cmd = ("python", "setup.py", "install", "--prefix", path)
         subprocess.check_call(cmd, cwd = self.dir, env = env)
 
 class YaraPythonWinDependency(object):
-    YARA_PYTHON_URL = "https://www.dropbox.com/sh/umip8ndplytwzj1/AADuLJ_5Sa279u0fKplRbkOZa/yara-python-3.6.1.win32-py2.7.exe?dl=1"
+    YARA_PYTHON_32BIT_URL = "https://www.dropbox.com/sh/umip8ndplytwzj1/AADuLJ_5Sa279u0fKplRbkOZa/yara-python-3.6.1.win32-py2.7.exe?dl=1"
+    YARA_PYTHON_64BIT_URL = "https://www.dropbox.com/sh/umip8ndplytwzj1/AADetRlpZd-Nd4slSkud78Qxa/yara-python-3.6.3.win-amd64-py2.7.exe?dl=1"
 
     def __init__(self):
-        handle, self.installer = tempfile.mkstemp()
+        handle, self.installer_32bit = tempfile.mkstemp()
         os.close(handle)
-        cmd = ("curl", "-L", "-o", self.installer, self.YARA_PYTHON_URL)
+        handle, self.installer_64bit = tempfile.mkstemp()
+        os.close(handle)
+        cmd = ("curl", "-L", "-o", self.installer_32bit, self.YARA_PYTHON_32BIT_URL)
+        subprocess.check_call(cmd)
+        cmd = ("curl", "-L", "-o", self.installer_64bit, self.YARA_PYTHON_64BIT_URL)
         subprocess.check_call(cmd)
 
     def destroy(self):
-        os.unlink(self.installer)
+        os.unlink(self.installer_32bit)
+        os.unlink(self.installer_64bit)
 
-    def install(self, path):
-        cmd = ("unzip", "-j", "-d", os.path.join(path, "lib/python2.7"), self.installer, "PLATLIB/yara.pyd")
+    def install(self, path, bits):
+        if bits == 32:
+            cmd = ("unzip", "-j", "-d", os.path.join(path, "lib/python2.7"), self.installer_32bit, "PLATLIB/yara.pyd")
+        else:
+            cmd = ("unzip", "-j", "-d", os.path.join(path, "lib/python2.7"), self.installer_64bit, "PLATLIB/yara.pyd")
         # unzip will return status 1 because the file is a self-extracting archive, where the self extractor
         # is detected as junk 
         subprocess.call(cmd)
@@ -68,31 +79,19 @@ class YaraPythonLinuxDependency(object):
     def destroy(self):
         shutil.rmtree(self.yara_python_dir)
 
-    def install(self, path):
+    def install(self, path, bits):
         env = os.environ.copy()
         env["PYTHONPATH"] = os.path.join(path, "lib/python2.7/site-packages")
-        env["CFLAGS"] = "-m32"
-        env["CXXFLAGS"] = "-m32"
-        env["LDFLAGS"] = "-m32"
+        if bits == 32:
+            env["CFLAGS"] = "-m32"
+            env["CXXFLAGS"] = "-m32"
+            env["LDFLAGS"] = "-m32"
+        cmd = ("python", "setup.py", "clean")
+        subprocess.check_call(cmd, cwd = self.yara_python_dir)
+        if os.path.exists(os.path.join(self.yara_python_dir, "build")):
+            shutil.rmtree(os.path.join(self.yara_python_dir, "build"))
         cmd = ("python", "setup.py", "install", "--prefix", path)
         subprocess.check_call(cmd, cwd = self.yara_python_dir, env = env)
-
-ply = GitPythonDependency("https://github.com/dabeaz/ply")
-idann = GitPythonDependency("https://github.com/williballenthin/ida-netnode")
-
-yara_python_win = YaraPythonWinDependency()
-yara_python_linux = YaraPythonLinuxDependency()
-
-
-def fetch_windows_dependencies(path):
-    ply.install(os.path.join(path, "python"))
-    idann.install(os.path.join(path, "python"))
-    yara_python_win.install(os.path.join(path, "python"))
-
-def fetch_linux_dependencies(path):
-    ply.install(os.path.join(path, "python"))
-    idann.install(os.path.join(path, "python"))
-    yara_python_linux.install(os.path.join(path, "python"))
 
 def get_plugin_git_version():
     try:
@@ -104,10 +103,28 @@ def main(args):
     my_directory = os.path.split(os.path.abspath(__file__))[0]
     version = get_plugin_git_version()
 
+    ply = GitPythonDependency("https://github.com/dabeaz/ply")
+    idann = GitPythonDependency("https://github.com/williballenthin/ida-netnode")
+
+    yara_python_win = YaraPythonWinDependency()
+    yara_python_linux = YaraPythonLinuxDependency()
+
+    def fetch_windows_dependencies(path, bits):
+        ply.install(os.path.join(path, "python"), bits)
+        idann.install(os.path.join(path, "python"), bits)
+        yara_python_win.install(os.path.join(path, "python"), bits)
+
+    def fetch_linux_dependencies(path, bits):
+        ply.install(os.path.join(path, "python"), bits)
+        idann.install(os.path.join(path, "python"), bits)
+        yara_python_linux.install(os.path.join(path, "python"), bits)
+
     architectures = [
         ("universal", lambda x: None),
-        ("windows_fat", fetch_windows_dependencies),
-        ("linux_fat", fetch_linux_dependencies)]
+        ("windows_32bit_fat", partial(fetch_windows_dependencies, bits = 32)),
+        ("windows_64bit_fat", partial(fetch_windows_dependencies, bits = 64)),
+        ("linux_32bit_fat", partial(fetch_linux_dependencies, bits = 32)),
+        ("linux_64bit_fat", partial(fetch_linux_dependencies, bits = 64))]
 
 
     for arch, fetcher in architectures:
