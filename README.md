@@ -23,25 +23,27 @@ README with pictures can be found on our wiki:
 ## Building
 You need a working build system to build the yara-python library. On Ubuntu,
 you can get that by installing `sudo apt-get install -y build-essential
-libpython2.7-dev:i386 gcc-multilib`.
+libpython2.7-dev libpython2.7-dev:i386 gcc-multilib libssl-dev libssl-dev:i386`
+on a 64 bit system (The build process has been developed for a 64 bit machine,
+and will not work out of the box on a 32 bit machine).
 
 Run `python package.py --output <output-dir>` to build the plugin zip archives.
+This will build all combinations of 32/64 versions for Windows and Linux.
 
 ## Installation
+If you are using your system's python for IDA Pro (probably the case if you're
+on a 32 bit Linux system, or on a 64 bit Linux system and you're using IDA 7.0
+or higher), you can install the packages _ply_, _yara-python_ and
+_ida-netnode_, and then unzip the _casc-\*-universal.zip_ archive into your IDA
+Pro directory.
 
-The ClamAV Signature Creator (CASC) is easy to install. You simply have to
-unzip one of the generated zip archives into the IDA Pro installation directory
-(not inside _plugins_ directory, but the one where _idaq_ is located). Which
-archive you may want to use depends on your python configuration. If you use
-the system's python, choose the _casc-\*-universal.zip_ package, and then
-install the packages _ply_ and _yara_ via _pip_ or your system packages (When you
-install _yara_ via _pip_, you need to take great care to have pip build 32 bit
-libraries. Do that by exporting the environment variables _CFLAGS=-m32_
-_CXXFLAGS=-m32_ _LDFLAGS=-m32_ before you invoke pip).
-
-If you are using IDA's bundled python, you can choose one of the
-_casc-\*-fat.zip_ archives, depending on your operating system. They have all
-the libraries bundled which you would otherwise install with pip. 
+Otherwise, if you use the python bundled with IDA Pro, you'll need to install
+the libraries in this python. Either you can do this by yourself (e.g., by
+following the instructions from [hexblog](http://www.hexblog.com/?p=726)), or
+you use the archives with bundled dependencies that we provide. Those archives
+are built as described in the [building][#Building] step above, by running
+_package.py_. To install an archive, simply pick the _casc-\*-fat.zip_
+corresponding to your system, and unzip it in your IDA Pro directory.
 
 In case you don't want to install additional libraries, the plugin will degrade
 gracefully and hide the _"Analyze"_ functionality which requires the libraries to
@@ -64,6 +66,8 @@ Tested on
 ---------
 | IDA Pro Version | OK | Notes                                              |
 | ----- | --------------- | ---------------------------------------------------|
+| 7.0 | Y            |                                                    |
+| 6.95| Y            |                                                    |
 | 6.7 | Y            |                                                    |
 | 6.6 | Y            | Doesn't support right click option in IDA View or Strings Windows |
 | 6.5 | N            | IDA doesn't provide PySide and Qt support          |
