@@ -159,7 +159,7 @@ start = 'signature'
 
 def p_error(p):
     if p:
-        raise SignatureParseException("Syntax error in input at input token '%s' at position %d" % (p[1], p.lexpos(1)))
+        raise SignatureParseException("Syntax error in input at input token '%s' at position %d" % (p.value, p.lexpos))
     else:
         raise SignatureParseException("Unexpected end of file")
 
