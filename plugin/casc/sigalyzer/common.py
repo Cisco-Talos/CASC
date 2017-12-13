@@ -13,8 +13,8 @@ class FixedString():
     def __init__(self, fixed_bytes):
         self.fixed_bytes = fixed_bytes
 
-    def clone_append(self, byte):
-        return self.__class__(self.fixed_bytes + [byte])
+    def clone_prepend(self, byte):
+        return self.__class__([byte] + self.fixed_bytes)
 
     def __repr__(self):
         return "%s(%s)" %  (self.__class__.__name__, " ".join(x.__repr__() for x in self.fixed_bytes))
