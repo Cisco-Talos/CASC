@@ -176,8 +176,7 @@ class LdbSignature():
 
 
 def parse_signature(signature):
-    for sig_type in [NdbSignature, LdbSignature]:
-        try:
-            return sig_type.parse(signature)
-        except SignatureParseException:
-            pass
+    if signature.count(";") >= 3:
+        return LdbSignature.parse(signature)
+    else:
+        return NdbSignature.parse(signature)
