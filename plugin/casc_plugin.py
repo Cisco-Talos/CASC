@@ -40,6 +40,7 @@ from idaapi import PluginForm, action_handler_t, UI_Hooks, plugin_t, BADADDR, \
 
 #   Python Modules
 import collections
+import struct
 import bisect
 import pickle
 import math
@@ -67,7 +68,14 @@ try:
         #<IDAROOT>/python/lib/python2.7/site-packages. Make this prettier in the future.
         import os
         import site
-        site.addsitedir(os.path.join(GetIdaDirectory(), "python", "lib", "python2.7", "site-packages"))
+        try:
+            site.addsitedir(os.path.join(GetIdaDirectory(), "python", "lib", "python2.7", "site-packages"))
+        except NameError:
+            try:
+                import ida_diskio
+                site.addsitedir(os.path.join(ida_diskio.get_ida_subdirs('python')[1], 'lib', 'python2.7', 'site-packages'))
+            except ImportError:
+                print 'Get IDA directory'
 
         import yara
         import ply
@@ -86,7 +94,8 @@ except ImportError as err:
     sigalyzer_required_modules_loaded = False
 
 SIGALYZER_COLOR_HIGHLIGHTED = 0x4dd811
-
+AR_LONG = 65
+AR_STR = 83
 #   Global Variables
 #-------------------------------------------------------------------------------
 b_asm_sig_handler_loaded = True
@@ -2727,8 +2736,6 @@ class ClamAVSigCreatorPlugin(plugin_t):
 
     def init(self):
         global clamav_sig_creator_plugin
-
-        file_type = IDAW.GetCharPrm(INF_FILETYPE)
 
         #   Currently only supports intel_x86
         if get_file_type() not in [1, 6, 9]:
