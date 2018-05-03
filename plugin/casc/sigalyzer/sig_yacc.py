@@ -136,4 +136,3 @@ def parse_pattern(signature):
     return parser.parse(signature, lexer = lexer, debug = logging.getLogger())
 #result = parser.parse("4f5c*2345{-12}ccdd((aa|f?)|bb|cc)????00")
 #print(result)
-
