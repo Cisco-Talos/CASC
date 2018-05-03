@@ -1,8 +1,11 @@
+from __future__ import absolute_import
+
 import re
 import logging
-from casc.sigalyzer.sig_yacc import parse_pattern
-from casc.sigalyzer.cond_yacc import parse_condition
-from casc.sigalyzer.common import SignatureParseException
+
+from .sig_yacc import parse_pattern
+from .cond_yacc import parse_condition
+from .common import SignatureParseException
 
 log = logging.getLogger("sigalyzer.clamav")
 

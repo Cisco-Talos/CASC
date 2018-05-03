@@ -1,7 +1,9 @@
-from casc.sigalyzer.sig_lex import tokens, lexer
+from __future__ import absolute_import
+
 import ply.yacc as yacc
 import logging
-from casc.sigalyzer.common import SignatureParseException, \
+from .sig_lex import tokens, lexer
+from .common import SignatureParseException, \
    FixedByte, FixedString, FixedStringLenTwo, Skip, \
    Choice, ShortSkip, Not, HighNibble, LowNibble 
 

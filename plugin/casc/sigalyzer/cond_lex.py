@@ -1,5 +1,7 @@
+from __future__ import absolute_import
+
 import ply.lex as lex
-from casc.sigalyzer.common import SignatureParseException
+from .common import SignatureParseException
 
 tokens = (
     'NUMBER',

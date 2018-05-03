@@ -1,14 +1,17 @@
-from casc.sigalyzer.common import SignatureParseException, \
+from __future__ import absolute_import
+
+import re
+
+from .common import SignatureParseException, \
    FixedByte, FixedString, FixedStringLenTwo, Skip, \
    Choice, ShortSkip, Not, HighNibble, LowNibble 
-from casc.sigalyzer.common import CondSubsignature, \
+from .common import CondSubsignature, \
     CondAnd, CondOr, CondMatchExact, CondMatchMore, \
     CondMatchLess
-from casc.sigalyzer.clamav import NdbSignature, LdbSignature, parse_signature
-from casc.sigalyzer.clamav import AbsoluteOffset, EPRelativeOffset, \
+from .clamav import NdbSignature, LdbSignature, parse_signature
+from .clamav import AbsoluteOffset, EPRelativeOffset, \
     InSectionOffset, SectionRelativeOffset, EOFRelativeOffset, \
     AnyOffset
-import re
 
 
 def _to_yara_pattern(sig):
