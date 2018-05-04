@@ -2299,7 +2299,6 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
                 idc.SetColor(ea, idc.CIC_ITEM, color)
             self.previous_colors = []
             for ea in idautils.Heads(match["ea"], match["ea"] + len(match["data"])):
-                print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
                 idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
         except KeyError:
@@ -2320,7 +2319,6 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
                     (strings[0]["ea"], len(strings[0]["data"]), " ".join("%02x" % ord(x) for x in strings[0]["data"])))
             idc.Jump(strings[0]["ea"])
             for ea in idautils.Heads(strings[0]["ea"], strings[0]["ea"] + len(strings[0]["data"])):
-                print_console("Coloring ea 0x%x" % ea)
                 self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
                 idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
 
