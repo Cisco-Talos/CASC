@@ -17,7 +17,7 @@ def p_signature(p):
             if p[1].max == Skip.INFINITY or p[2][0].max == Skip.INFINITY:
                 max = Skip.INFINITY
             else:
-                max = p[1],max + p[2][0].max
+                max = p[1].max + p[2][0].max
             p[0] = [Skip(p[1].min + p[2][0].min, max)] + p[2][1:]
         elif isinstance(p[1], FixedByte) and isinstance(p[2][0], FixedByte):
             p[0] = [FixedString([p[1], p[2][0]])] + p[2][1:]
