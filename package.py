@@ -95,7 +95,7 @@ class YaraPythonLinuxDependency(object):
 
 def get_plugin_git_version():
     try:
-        return subprocess.check_output(["git", "describe", "--tags"]).split("\n")[0].strip() or "devel"
+        return subprocess.check_output(["git", "describe", "--always", "--tags"]).split("\n")[0].strip() or "devel"
     except OSError:
         return "unknown"
 
