@@ -49,6 +49,7 @@ import re
 import csv
 from urllib import quote_plus
 from pprint import pprint
+from idc import GetIdaDirectory
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
