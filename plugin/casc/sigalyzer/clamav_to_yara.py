@@ -1,10 +1,12 @@
+from __future__ import absolute_import
+
 import os
 import sys
 import argparse
 import logging
 
-from casc.sigalyzer.clamav import parse_signature
-from casc.sigalyzer.yara import convert_to_yara
+from .clamav import parse_signature
+from .yara import convert_to_yara
 
 log = logging.getLogger("clamav_to_yara")
 

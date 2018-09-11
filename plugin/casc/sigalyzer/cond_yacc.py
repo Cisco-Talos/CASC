@@ -1,6 +1,8 @@
-from casc.sigalyzer.cond_lex import tokens, lexer
+from __future__ import absolute_import
+
 import ply.yacc as yacc
-from casc.sigalyzer.common import SignatureParseException, \
+from .cond_lex import tokens, lexer
+from .common import SignatureParseException, \
     CondSubsignature, CondAnd, CondOr, CondMatchExact, \
     CondMatchMore, CondMatchLess
 

@@ -1,14 +1,17 @@
-from casc.sigalyzer.common import SignatureParseException, \
+from __future__ import absolute_import
+
+import re
+
+from .common import SignatureParseException, \
    FixedByte, FixedString, FixedStringLenTwo, Skip, \
    Choice, ShortSkip, Not, HighNibble, LowNibble 
-from casc.sigalyzer.common import CondSubsignature, \
+from .common import CondSubsignature, \
     CondAnd, CondOr, CondMatchExact, CondMatchMore, \
     CondMatchLess
-from casc.sigalyzer.clamav import NdbSignature, LdbSignature, parse_signature
-from casc.sigalyzer.clamav import AbsoluteOffset, EPRelativeOffset, \
+from .clamav import NdbSignature, LdbSignature, parse_signature
+from .clamav import AbsoluteOffset, EPRelativeOffset, \
     InSectionOffset, SectionRelativeOffset, EOFRelativeOffset, \
     AnyOffset
-import re
 
 
 def _to_yara_pattern(sig):
@@ -31,6 +34,21 @@ def _to_yara_pattern(sig):
     elif isinstance(sig, list):
         return " ".join(_to_yara_pattern(x) for x in sig)
 
+def _get_subsignatures(cond):
+    if isinstance(cond, CondSubsignature):
+        return ["subsig_%02d" % cond.number]
+    elif isinstance(cond, CondAnd):
+        return _get_subsignatures(cond.a) + _get_subsignatures(cond.b)
+    elif isinstance(cond, CondOr):
+        return _get_subsignatures(cond.a) + _get_subsignatures(cond.b)
+    elif isinstance(cond, CondMatchExact):
+        return _get_subsignatures(cond.condition)
+    elif isinstance(cond, CondMatchLess):
+        return _get_subsignatures(cond.condition)
+    elif isinstance(cond, CondMatchMore):
+        return _get_subsignatures(cond.condition)
+    
+
 def _to_yara_condition(cond):
     if isinstance(cond, CondSubsignature):
         return "$subsig_%02d" % cond.number
@@ -39,18 +57,35 @@ def _to_yara_condition(cond):
     elif isinstance(cond, CondOr):
         return "(%s) or (%s)" % (_to_yara_condition(cond.a), _to_yara_condition(cond.b))
     elif isinstance(cond, CondMatchExact):
-        if not isinstance(cond.condition, CondSubsignature):
-            raise NotImplementedError("Support for logical groups in match expression is not yet implemented")
-        return "#subsig_%02d == %d" % (cond.condition.number, cond.count)
-    elif isinstance(cond, CondMatchLess):
-        if not isinstance(cond.condition, CondSubsignature):
-            raise NotImplementedError("Support for logical groups in match expression is not yet implemented")
-        return "#subsig_%02d < %d" % (cond.condition.number, cond.count)
-    elif isinstance(cond, CondMatchMore):
-        if not isinstance(cond.condition, CondSubsignature):
-            raise NotImplementedError("Support for logical groups in match expression is not yet implemented")
-        return "#subsig_%02d > %d" % (cond.condition.number, cond.count)
+        if cond.count == 0:
+            if cond.min_signatures != 0:
+                raise NotImplementedError("Support for minimum number of different matching signatures is not implemented!")
 
+            return "not (%s)" % _to_yara_condition(cond.condition)
+
+        min_signatures = ""
+        if cond.min_signatures != 0:
+            min_signatures = " and %d of (%s)" % (cond.min_signatures, ",".join("$%s" % x for x in _get_subsignatures(cond.condition)))
+
+        subpattern_count = " + ".join("#%s" % x for x in _get_subsignatures(cond.condition))
+
+        return "(%s) and (%s) == %d%s" % (_to_yara_condition(cond.condition), subpattern_count, cond.count, min_signatures)
+    elif isinstance(cond, CondMatchLess):
+        min_signatures = ""
+        if cond.min_signatures != 0:
+            min_signatures = " and %d of (%s)" % (cond.min_signatures, ",".join("$%s" % x for x in _get_subsignatures(cond.condition)))
+
+        subpattern_count = " + ".join("#%s" % x for x in _get_subsignatures(cond.condition))
+
+        return "(%s) and (%s) < %d%s" % (_to_yara_condition(cond.condition), subpattern_count, cond.count, min_signatures)
+    elif isinstance(cond, CondMatchMore):
+        min_signatures = ""
+        if cond.min_signatures != 0:
+            min_signatures = " and %d of (%s)" % (cond.min_signatures, ",".join("$%s" % x for x in _get_subsignatures(cond.condition)))
+
+        subpattern_count = " + ".join("#%s" % x for x in _get_subsignatures(cond.condition))
+
+        return "(%s) and (%s) > %d%s" % (_to_yara_condition(cond.condition), subpattern_count, cond.count, min_signatures)
 
 def _target_type_condition(target_type):
     if target_type == 0:

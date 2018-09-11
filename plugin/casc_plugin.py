@@ -49,6 +49,7 @@ import re
 import csv
 from urllib import quote_plus
 from pprint import pprint
+from idc import GetIdaDirectory
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
@@ -698,7 +699,7 @@ class CASCParser(object):
     def mask_instruction(self, ea, maskings):
         instruction = IDAW.DecodeInstruction(ea)
         if not instruction:
-            return ('db 0x{0:02}'.format(Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
+            return ('db 0x{0:02}'.format(IDAW.Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
 
         size = IDAW.DecodeInstruction(ea).size
         original = ' '.join(['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)])
@@ -1048,7 +1049,7 @@ class IntelParser(CASCParser):
         instruction = IDAW.DecodeInstruction(ea)
         if not instruction:
             return {'address' : ea, 'bytes' : ['{:02x}'.format(IDAW.Byte(ea))],
-                    'disassembly' : 'db 0x{0:02}'.format(Byte(ea))}
+                    'disassembly' : 'db 0x{0:02}'.format(IDAW.Byte(ea))}
         size = IDAW.DecodeInstruction(ea).size
         original = ['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)]
         disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
@@ -1396,7 +1397,7 @@ class YaraScanner():
                 if not seg:
                     continue
                 offset = len(memory)
-                memory += [chr(Byte(ea)) for ea in xrange(seg.startEA, seg.endEA)]
+                memory += [chr(IDAW.Byte(ea)) for ea in xrange(seg.startEA, seg.endEA)]
                 offsets.append({"address": seg.startEA,
                                 "offset": offset,
                                 "size": len(memory) - offset})
@@ -1458,7 +1459,7 @@ class YaraScanner():
                 end = self._file_offset_to_yara_offset(offset.offset + offset.shift)
                 return "$%s in (%d..%d)" % (rulename, start, end)
         elif isinstance(offset, EPRelativeOffset):
-            ep_ea = next(Entries())[2]
+            ep_ea = next(idautils.Entries())[2]
             start = self._ea_to_yara_offset(ep_ea + offset.offset)
 
             if offset.shift is None:
@@ -2009,14 +2010,14 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 
         self.sub_signatures = collections.OrderedDict()
 
-        index = IDAW.GetFirstIndex(AR_LONG, self.sigs_db)
+        index = IDAW.GetFirstIndex(idc.AR_LONG, self.sigs_db)
         while index != -1:
             entry = self.__get_array(index)
 
             self.sub_signatures[index] = entry
             self.next_index = index
             self.index_lookup_table.append(index)
-            index = IDAW.GetNextIndex(AR_LONG, self.sigs_db, index)
+            index = IDAW.GetNextIndex(idc.AR_LONG, self.sigs_db, index)
 
         self.next_index += 1
         print '[CASCPlugin] Loaded %d sub signatures' % len(self.sub_signatures)
@@ -2103,7 +2104,7 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.removeRow(row_index)
 
             #   Delete from IDB
-            IDAW.DelArrayElement(AR_LONG, self.sigs_db, index)
+            IDAW.DelArrayElement(idc.AR_LONG, self.sigs_db, index)
             IDAW.DeleteArray('sub_signatures_{}'.format(index))
 
     def add_sub_signature(self, sub_sig_data, notes, index=None):
@@ -2271,7 +2272,7 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
         self.subsignatures_list.clear()
 
         for ea, color in self.previous_colors:
-            SetColor(ea, CIC_ITEM, color)
+            idc.SetColor(ea, idc.CIC_ITEM, color)
         self.previous_colors = []
         self.match_label.setText("")
 
@@ -2294,18 +2295,17 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
             match = self.matches[item.subsignature_name]
             self.match_label.setText("Match:   EA: 0x%08x  Length: % 4d     Bytes: %s" % \
                     (match["ea"], len(match["data"]), " ".join("%02x" % ord(x) for x in match["data"])))
-            Jump(match["ea"])
+            idc.Jump(match["ea"])
             for ea, color in self.previous_colors:
-                SetColor(ea, CIC_ITEM, color)
+                idc.SetColor(ea, idc.CIC_ITEM, color)
             self.previous_colors = []
-            for ea in Heads(match["ea"], match["ea"] + len(match["data"])):
-                print_console("Coloring ea 0x%x" % ea)
-                self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
-                SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+            for ea in idautils.Heads(match["ea"], match["ea"] + len(match["data"])):
+                self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
+                idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
         except KeyError:
             self.match_label.setText("No match")
             for ea, color in self.previous_colors:
-                SetColor(ea, CIC_ITEM, color)
+                idc.SetColor(ea, idc.CIC_ITEM, color)
             self.previous_colors = []
         except IndexError:
             log.exception("While selecting subsignature")
@@ -2318,19 +2318,18 @@ class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
             self.matches = {}
             self.match_label.setText("Match:   EA: 0x%08x  Length: % 4d     Bytes: %s" % \
                     (strings[0]["ea"], len(strings[0]["data"]), " ".join("%02x" % ord(x) for x in strings[0]["data"])))
-            Jump(strings[0]["ea"])
-            for ea in Heads(strings[0]["ea"], strings[0]["ea"] + len(strings[0]["data"])):
-                print_console("Coloring ea 0x%x" % ea)
-                self.previous_colors.append((ea, GetColor(ea, CIC_ITEM)))
-                SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+            idc.Jump(strings[0]["ea"])
+            for ea in idautils.Heads(strings[0]["ea"], strings[0]["ea"] + len(strings[0]["data"])):
+                self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
+                idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
 
     def saving(self):
         for ea, color in self.previous_colors:
-            SetColor(ea, CIC_ITEM, color)
+            idc.SetColor(ea, idc.CIC_ITEM, color)
 
     def saved(self):
         for ea, color in self.previous_colors:
-            SetColor(ea, CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+            idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
 
 #   Main Plug-in Form Class
 #-------------------------------------------------------------------------------
@@ -2423,7 +2422,7 @@ class SignatureCreatorFormClass(PluginForm):
             if model.data(model.index(index, 2), Qt.DisplayRole) != 'C':
                 length -= 1
 
-            raw = ['{0:02x}'.format(Byte(address + i)) for i in xrange(length)]
+            raw = ['{0:02x}'.format(IDAW.Byte(address + i)) for i in xrange(length)]
 
             data[address] = ' '.join(raw)
 
@@ -2736,6 +2735,8 @@ class ClamAVSigCreatorPlugin(plugin_t):
 
     def init(self):
         global clamav_sig_creator_plugin
+
+        file_type = IDAW.GetCharPrm(idc.INF_FILETYPE)
 
         #   Currently only supports intel_x86
         if get_file_type() not in [1, 6, 9]:
