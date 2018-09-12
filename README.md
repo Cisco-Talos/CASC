@@ -14,16 +14,40 @@ engineers in creating ClamAV NDB and LDB signatures from IDA Pro's Disassembly
 or Strings view.
 
 CASC should run on any platform that supports IDA Pro 6.7 and higher.
-Limited functionality is available for IDA Pro 6.6
+Limited functionality is available for IDA Pro 6.6.
+The signature analyzer part of CASC has only been tested on IDA 6.9.
 
 README with pictures can be found on our wiki:
     [https://github.com/vrtadmin/casc/wiki](https://github.com/vrtadmin/casc/wiki)
 
+## Building
+You need a working build system to build the yara-python library. On Ubuntu,
+you can get that by installing `sudo apt-get install -y build-essential
+libpython2.7-dev libpython2.7-dev:i386 gcc-multilib libssl-dev libssl-dev:i386`
+on a 64 bit system (The build process has been developed for a 64 bit machine,
+and will not work out of the box on a 32 bit machine).
+
+Run `python package.py --output <output-dir>` to build the plugin zip archives.
+This will build all combinations of 32/64 versions for Windows and Linux.
+
 ## Installation
+If you are using your system's python for IDA Pro (probably the case if you're
+on a 32 bit Linux system, or on a 64 bit Linux system and you're using IDA 7.0
+or higher), you can install the packages _ply_, _yara-python_ and
+_ida-netnode_, and then unzip the _casc-\*-universal.zip_ archive into your IDA
+Pro directory.
 
-The ClamAV Signature Creator (CASC) is easy to install. Simply copy and paste 
-the Python script (`clamav_sig_creator.py`) to IDA Pro’s plug-in directory
+Otherwise, if you use the python bundled with IDA Pro, you'll need to install
+the libraries in this python. Either you can do this by yourself (e.g., by
+following the instructions from [hexblog](http://www.hexblog.com/?p=726)), or
+you use the archives with bundled dependencies that we provide. Those archives
+are built as described in the [building][#Building] step above, by running
+_package.py_. To install an archive, simply pick the _casc-\*-fat.zip_
+corresponding to your system, and unzip it in your IDA Pro directory.
 
+In case you don't want to install additional libraries, the plugin will degrade
+gracefully and hide the _"Analyze"_ functionality which requires the libraries to
+be installed.
 
 | Operating System               | IDA Pro Plug-in Path                     |
 | ------------------------------ | -----------------------------------------|
@@ -42,6 +66,8 @@ Tested on
 ---------
 | IDA Pro Version | OK | Notes                                              |
 | ----- | --------------- | ---------------------------------------------------|
+| 7.0 | Y            |                                                    |
+| 6.95| Y            |                                                    |
 | 6.7 | Y            |                                                    |
 | 6.6 | Y            | Doesn't support right click option in IDA View or Strings Windows |
 | 6.5 | N            | IDA doesn't provide PySide and Qt support          |
@@ -144,8 +170,20 @@ Once the “Create ClamAV Signature” button is click a dialog box with a
 formatted email will be displayed for the user to send to ClamAV’s 
 community-sigs list. Selecting the [community-sigs@lists.clamav.net](community-sigs@lists.clamav.net) hyperlink  is a mailto: link. It will attempt to copy the signature information displayed  to the systems default mail client. Keep in mind if any special characters are  used then the email’s contents may not be correct and will need to be manually  copied over.
 
-## Bugs and Support
+## Analyzing ClamAV signatures
+In the main plugin panel, use the tabbed pane to switch to the _"Analyze"_
+mode. Note that this tab is not available if you don't have the required
+libraries installed.  You can now paste a ClamAV .ldb or .ndb signature in the
+text field above the _"Add Signature"_ button. Once you then click _Add
+signature_, the signature will appear in the left top list (if it was well
+formatted and parsed by the plugin, otherwise check the IDA Pro output window
+for errors). Now you can double-click on the signature in the list. For .ndb
+signatures this will directly bring you to the matched part of the binary,
+and color the match in red. For .ldb signatures, the subsignatures will be
+displayed in the right list element. If you double-click any of the sub
+signature entries, it will bring you to the match for this subsignature.
 
+## Bugs and Support
 There is no support provided with CASC. 
 
 If you think you've found a bug, please report it at:

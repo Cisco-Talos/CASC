@@ -40,6 +40,7 @@ from idaapi import PluginForm, action_handler_t, UI_Hooks, plugin_t, BADADDR, \
 
 #   Python Modules
 import collections
+import struct
 import bisect
 import pickle
 import math
@@ -48,6 +49,7 @@ import re
 import csv
 from urllib import quote_plus
 from pprint import pprint
+from idc import GetIdaDirectory
 try:
     #   For IDA 6.8 and older using PySide
     from PySide import QtGui, QtGui as QtWidgets, QtCore
@@ -57,6 +59,44 @@ except ImportError:
     from PyQt5 import QtGui, QtWidgets, QtCore
     from PyQt5.QtCore import Qt
 
+try:
+    try:
+        import yara
+        import ply
+        import netnode
+    except ImportError:
+        #TODO: This is a hack to load the dependencies installed into
+        #<IDAROOT>/python/lib/python2.7/site-packages. Make this prettier in the future.
+        import os
+        import site
+        try:
+            site.addsitedir(os.path.join(GetIdaDirectory(), "python", "lib", "python2.7", "site-packages"))
+        except NameError:
+            try:
+                import ida_diskio
+                site.addsitedir(os.path.join(ida_diskio.get_ida_subdirs('python')[1], 'lib', 'python2.7', 'site-packages'))
+            except ImportError:
+                print 'Get IDA directory'
+
+        import yara
+        import ply
+        import netnode
+    from casc.sigalyzer.clamav import parse_signature, LdbSignature, NdbSignature
+    from casc.sigalyzer.yara import convert_to_yara
+    from casc.sigalyzer.ida import print_console
+    from casc.sigalyzer.clamav import AbsoluteOffset, EPRelativeOffset, \
+        AnyOffset, InSectionOffset, SectionRelativeOffset, \
+        EOFRelativeOffset
+    from ida_loader import get_fileregion_ea
+
+    sigalyzer_required_modules_loaded = True
+except ImportError as err:
+    print("[CASCPlugin] Error loading dependencies for Sigalyzer: {}".format(str(err)))
+    sigalyzer_required_modules_loaded = False
+
+SIGALYZER_COLOR_HIGHLIGHTED = 0x4dd811
+AR_LONG = 65
+AR_STR = 83
 #   Global Variables
 #-------------------------------------------------------------------------------
 b_asm_sig_handler_loaded = True
@@ -72,19 +112,28 @@ class IDAWrapper(object):
     '''
     Class to wrap functions that are not thread safe
     '''
+    mapping = {
+        'get_tform_type' : 'get_widget_type',
+    }
+    def __init__(self):
+        self.version = idaapi.IDA_SDK_VERSION
+
     def __getattribute__(self, name):
         default = '[1st] default'
 
-        val = getattr(idaapi, name, default)
-        if val == default:
-            val = getattr(idc, name, default)
+        if (idaapi.IDA_SDK_VERSION >= 700) and (name in IDAWrapper.mapping):
+            name = IDAWrapper.mapping[name]
 
+        val = getattr(idaapi, name, default)
         if val == default:
             val = getattr(idautils, name, default)
 
         if val == default:
+            val = getattr(idc, name, default)
+
+        if val == default:
             msg = 'Unable to find {}'.format(name)
-            print msg
+            idaapi.execute_ui_requests((FIRSTUI.Requests.Print(msg),))
             return
 
         if hasattr(val, '__call__'):
@@ -650,7 +699,7 @@ class CASCParser(object):
     def mask_instruction(self, ea, maskings):
         instruction = IDAW.DecodeInstruction(ea)
         if not instruction:
-            return ('db 0x{0:02}'.format(Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
+            return ('db 0x{0:02}'.format(IDAW.Byte(ea)), ' '.join(['{:02x}'.format(IDAW.Byte(ea))]))
 
         size = IDAW.DecodeInstruction(ea).size
         original = ' '.join(['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)])
@@ -1000,7 +1049,7 @@ class IntelParser(CASCParser):
         instruction = IDAW.DecodeInstruction(ea)
         if not instruction:
             return {'address' : ea, 'bytes' : ['{:02x}'.format(IDAW.Byte(ea))],
-                    'disassembly' : 'db 0x{0:02}'.format(Byte(ea))}
+                    'disassembly' : 'db 0x{0:02}'.format(IDAW.Byte(ea))}
         size = IDAW.DecodeInstruction(ea).size
         original = ['{:02x}'.format(IDAW.Byte(ea + i)) for i in xrange(size)]
         disassembly = IDAW.tag_remove(IDAW.generate_disasm_line(ea, 1))
@@ -1333,6 +1382,121 @@ class MiscAssembly(Assembly):
     def get_save_data_tuple(self):
         return (None, None, None, self.get_opcode_list())
 
+class YaraScanner():
+    def __init__(self, callback):
+        self.memory = None
+        self.offsets = None
+        self.callback = callback
+
+    def _get_memory(self):
+        if self.memory is None:
+            memory = []
+            offsets = []
+            for n in range(IDAW.get_segm_qty()):
+                seg = IDAW.getnseg(n)
+                if not seg:
+                    continue
+                offset = len(memory)
+                memory += [chr(IDAW.Byte(ea)) for ea in xrange(seg.startEA, seg.endEA)]
+                offsets.append({"address": seg.startEA,
+                                "offset": offset,
+                                "size": len(memory) - offset})
+            self.memory = "".join(memory)
+            self.offsets = offsets
+        return self.memory, self.offsets
+
+    def _offset_to_address(self, offset):
+        if self.offsets is None:
+            self._get_memory()
+        for offs in self.offsets:
+            if offs["offset"] <= offset and offset < offs["offset"] + offs["size"]:
+                return offs["address"] + offset - offs["offset"]
+        return None
+
+    def _address_to_offset(self, address):
+        if self.offsets is None:
+            self._get_memory()
+        for offs in self.offsets:
+            if offs["address"] <= address and address < offs["address"] + offs["size"]:
+                return offs["offset"] + address - offs["address"]
+        return None
+
+    def scan(self, rule):
+        memory, offsets = self._get_memory()
+        rule.match(data = memory, callback = self._callback)
+
+    def compile(self, rule):
+        try:
+            return yara.compile(source = rule)
+        except yara.SyntaxError as err:
+            print_console(err)
+            print_console("===============")
+            print_console(rule)
+            print_console("===============")
+
+    def _ea_to_yara_offset(self, ea):
+        yara_offset = self._address_to_offset(ea)
+        if yara_offset is None:
+            raise RuntimeError("Cannot find yara offset for ea 0x%x" % ea)
+        return yara_offset
+
+    def _file_offset_to_yara_offset(self, file_offset):
+        ea = get_fileregion_ea(file_offset)
+        if ea == BADADDR:
+            raise RuntimeError("Cannot find ea for absolute file offset %d" % file_offset)
+        return self._ea_to_yara_offset(ea)
+
+    def _clamav_offset_to_yara(self, offset, rulename):
+        if isinstance(offset, AnyOffset):
+            return "true"
+        if isinstance(offset, AbsoluteOffset):
+            if offset.start == 0 and offset.end is None:
+                return "$%s" % rulename
+            elif offset.end is None:
+                return "$%s at %d" % (rulename, self._file_offset_to_yara_offset(offset.start))
+            else:
+                start = self._file_offset_to_yara_offset(offset.offset)
+                end = self._file_offset_to_yara_offset(offset.offset + offset.shift)
+                return "$%s in (%d..%d)" % (rulename, start, end)
+        elif isinstance(offset, EPRelativeOffset):
+            ep_ea = next(idautils.Entries())[2]
+            start = self._ea_to_yara_offset(ep_ea + offset.offset)
+
+            if offset.shift is None:
+                return "$%s at %d" % ( rulename, start)
+            else:
+                end = self._ea_to_yara_offset(ep_ea + offset.offset + offset.shift)
+                return "$%s in (%d..%d)" % \
+                    (rulename, start, end)
+        elif isinstance(offset, InSectionOffset):
+            segments = list(Segments())
+            #TODO: Segments in IDA Pro are probably not exactly the same thing as
+            # what ClamAV refers to as sections ...
+            start = self._ea_to_yara_offset(SegStart(segments[offset.section]))
+            end = self._ea_to_yara_offset(SegEnd(segments[offset.section]))
+            return "$%s in (%d..%d)" % (start, end)
+        elif isinstance(offset, SectionRelativeOffset):
+            segments = list(Segments())
+            start = self._ea_to_yara_offset(SegStart(segments[offset.section]) + offset.offset)
+            if offset.shift is None:
+                return "$%s at %d" % start
+            else:
+                end = self._ea_to_yara_offset(SegStart(segments[offset.section]) + offset.offset + offset.shift)
+                return "$%s in (%d..%d)" % (start, end)
+        else:
+            raise NotImplementedError("Offset type %s is not implemented" % offset.__class__.__name__)
+
+    def convert(self, clamav_signature):
+        return convert_to_yara(clamav_signature, self._clamav_offset_to_yara)
+
+    def _callback(self, data):
+        if data["matches"]:
+            strings = [
+                {"ea": self._offset_to_address(x[0]),
+                 "data": x[2],
+                 "identifier": x[1]} for  x in data["strings"]]
+            self.callback(strings)
+        return yara.CALLBACK_ABORT
 
 #   Dialog GUI Logic
 #
@@ -1846,14 +2010,14 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
 
         self.sub_signatures = collections.OrderedDict()
 
-        index = IDAW.GetFirstIndex(AR_LONG, self.sigs_db)
+        index = IDAW.GetFirstIndex(idc.AR_LONG, self.sigs_db)
         while index != -1:
             entry = self.__get_array(index)
 
             self.sub_signatures[index] = entry
             self.next_index = index
             self.index_lookup_table.append(index)
-            index = IDAW.GetNextIndex(AR_LONG, self.sigs_db, index)
+            index = IDAW.GetNextIndex(idc.AR_LONG, self.sigs_db, index)
 
         self.next_index += 1
         print '[CASCPlugin] Loaded %d sub signatures' % len(self.sub_signatures)
@@ -1940,7 +2104,7 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
             self.removeRow(row_index)
 
             #   Delete from IDB
-            IDAW.DelArrayElement(AR_LONG, self.sigs_db, index)
+            IDAW.DelArrayElement(idc.AR_LONG, self.sigs_db, index)
             IDAW.DeleteArray('sub_signatures_{}'.format(index))
 
     def add_sub_signature(self, sub_sig_data, notes, index=None):
@@ -2009,6 +2173,163 @@ class SubSignatureModel(QtCore.QAbstractTableModel):
         element, notes = pickle.loads(data)
         return (element, notes)
 
+#   Sigalyzer Widget
+#-------------------------------------------------------------------------------
+
+class SigalyzerWidget(QtWidgets.QWidget, idaapi.UI_Hooks):
+    def __init__(self):
+        super(QtWidgets.QWidget, self).__init__()
+        self.previous_colors = []
+        self.yara_scanner = YaraScanner(self.yara_match)
+        self.matches = {}
+        self.PopulateWidget()
+        self.netnode = netnode.Netnode("$ com.cisco.casc.sigalyzer")
+        for idx in sorted(self.netnode.keys()):
+            sig = self.netnode[idx]
+            self._add_signature(sig)
+        self.hook()
+
+    def PopulateWidget(self):
+        signatures_widget = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout()
+
+        layout.addWidget(QtWidgets.QLabel('Signatures'))
+        self.signatures_list = QtWidgets.QListWidget()
+        layout.addWidget(self.signatures_list)
+        signatures_widget.setLayout(layout)
+
+        container2 = QtWidgets.QGridLayout()
+        container2.addWidget(signatures_widget, 0, 0)
+
+        subsignatures_widget = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout()
+        self.subsignatures_list = QtWidgets.QListWidget()
+        layout.addWidget(QtWidgets.QLabel("LDB subsignatures"))
+        layout.addWidget(self.subsignatures_list)
+        subsignatures_widget.setLayout(layout)
+        container2.addWidget(subsignatures_widget, 0, 1)
+        #subsignatures_widget.hide()
+
+        container3 = QtWidgets.QVBoxLayout()
+        container3.addLayout(container2)
+        self.match_label = QtWidgets.QLabel()
+        container3.addWidget(self.match_label)
+        self.signature_line_edit = QtWidgets.QLineEdit()
+        container3.addWidget(self.signature_line_edit)
+        container4 = QtWidgets.QHBoxLayout()
+        container3.addLayout(container4)
+        add_signature_button = QtWidgets.QPushButton("Add signature")
+        remove_signature_button = QtWidgets.QPushButton("Remove signature")
+        container4.addWidget(add_signature_button)
+        container4.addWidget(remove_signature_button)
+
+        self.signature_line_edit.returnPressed.connect(self.add_signature)
+        add_signature_button.clicked.connect(self.add_signature)
+        remove_signature_button.clicked.connect(self.remove_signature)
+        self.signatures_list.itemActivated.connect(self.signature_selected)
+        self.subsignatures_list.itemActivated.connect(self.subsignature_selected)
+
+        item = QtWidgets.QListWidgetItem("Clear selection")
+        item.parsed_signature = None
+        self.signatures_list.addItem(item)
+
+        self.setLayout(container3)
+
+    def add_signature(self):
+        sig = self.signature_line_edit.text()
+        if self._add_signature(sig):
+            self.signature_line_edit.setText("")
+            key = len(self.netnode.keys())
+            while key in self.netnode.keys():
+                key += 1
+            self.netnode[key] = sig
+
+    def _add_signature(self, sig):
+        signature = parse_signature(sig)
+        if signature is None:
+            idaapi.warning("Error parsing signature")
+            return False
+        signature.target_type = 0 #Don't check for PE header
+        item = QtWidgets.QListWidgetItem(sig)
+        item.parsed_signature = signature
+        item.yara_rule = self.yara_scanner.compile(self.yara_scanner.convert(signature))
+        if isinstance(signature, LdbSignature):
+            pass
+        self.signatures_list.addItem(item)
+        return True
+
+    def remove_signature(self):
+        row = self.signatures_list.currentRow()
+        if row > 0:
+            item = self.signatures_list.takeItem(row)
+            for k, v in self.netnode.items():
+                if v == item.text():
+                    del self.netnode[k]
+                    break
+            self.signature_selected(self.signatures_list.item(0))
+
+    def signature_selected(self, item):
+        self.subsignatures_list.clear()
+
+        for ea, color in self.previous_colors:
+            idc.SetColor(ea, idc.CIC_ITEM, color)
+        self.previous_colors = []
+        self.match_label.setText("")
+
+        if item.parsed_signature is None:
+            pass
+        else:
+            if isinstance(item.parsed_signature, LdbSignature):
+                for i, subsig in enumerate(item.parsed_signature.subsignatures):
+                    item2 = QtWidgets.QListWidgetItem("% 2d   %s:%s" % (i, str(subsig.offset), subsig.clamav_signature))
+                    item2.subsignature_name = "$subsig_%02x" % i
+                    self.subsignatures_list.addItem(item2)
+            elif isinstance(item.parsed_signature, NdbSignature):
+                self.match_label.setText("No match")
+
+            print_console("Signature selected: %s" % item.text())
+            self.yara_scanner.scan(item.yara_rule)
+
+    def subsignature_selected(self, item):
+        try:
+            match = self.matches[item.subsignature_name]
+            self.match_label.setText("Match:   EA: 0x%08x  Length: % 4d     Bytes: %s" % \
+                    (match["ea"], len(match["data"]), " ".join("%02x" % ord(x) for x in match["data"])))
+            idc.Jump(match["ea"])
+            for ea, color in self.previous_colors:
+                idc.SetColor(ea, idc.CIC_ITEM, color)
+            self.previous_colors = []
+            for ea in idautils.Heads(match["ea"], match["ea"] + len(match["data"])):
+                self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
+                idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+        except KeyError:
+            self.match_label.setText("No match")
+            for ea, color in self.previous_colors:
+                idc.SetColor(ea, idc.CIC_ITEM, color)
+            self.previous_colors = []
+        except IndexError:
+            log.exception("While selecting subsignature")
+
+
+    def yara_match(self, strings):
+        if isinstance(self.signatures_list.currentItem().parsed_signature, LdbSignature):
+            self.matches = dict((x["identifier"], x) for x in strings)
+        else:
+            self.matches = {}
+            self.match_label.setText("Match:   EA: 0x%08x  Length: % 4d     Bytes: %s" % \
+                    (strings[0]["ea"], len(strings[0]["data"]), " ".join("%02x" % ord(x) for x in strings[0]["data"])))
+            idc.Jump(strings[0]["ea"])
+            for ea in idautils.Heads(strings[0]["ea"], strings[0]["ea"] + len(strings[0]["data"])):
+                self.previous_colors.append((ea, idc.GetColor(ea, idc.CIC_ITEM)))
+                idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
+
+    def saving(self):
+        for ea, color in self.previous_colors:
+            idc.SetColor(ea, idc.CIC_ITEM, color)
+
+    def saved(self):
+        for ea, color in self.previous_colors:
+            idc.SetColor(ea, idc.CIC_ITEM, SIGALYZER_COLOR_HIGHLIGHTED)
 
 #   Main Plug-in Form Class
 #-------------------------------------------------------------------------------
@@ -2101,7 +2422,7 @@ class SignatureCreatorFormClass(PluginForm):
             if model.data(model.index(index, 2), Qt.DisplayRole) != 'C':
                 length -= 1
 
-            raw = ['{0:02x}'.format(Byte(address + i)) for i in xrange(length)]
+            raw = ['{0:02x}'.format(IDAW.Byte(address + i)) for i in xrange(length)]
 
             data[address] = ' '.join(raw)
 
@@ -2176,9 +2497,17 @@ class SignatureCreatorFormClass(PluginForm):
         self.sub_signature_model = SubSignatureModel()
 
     def populate_main_form(self):
-        layout = QtWidgets.QVBoxLayout()
-        layout.setContentsMargins(0,0,0,0)
-        layout.setSpacing(0)
+        tabbed_pane = QtWidgets.QTabWidget()
+        create_pane = QtWidgets.QWidget()
+
+        tabbed_pane.addTab(create_pane, "Create")
+        if sigalyzer_required_modules_loaded:
+            analyze_pane = SigalyzerWidget()
+            tabbed_pane.addTab(analyze_pane, "Analyze")
+
+        create_layout = QtWidgets.QVBoxLayout()
+        create_layout.setContentsMargins(0,0,0,0)
+        create_layout.setSpacing(0)
 
         tableview = QtWidgets.QTableView()
         tableview.setModel(self.sub_signature_model)
@@ -2236,8 +2565,14 @@ class SignatureCreatorFormClass(PluginForm):
         hboxview.addWidget(generate_button)
 
         #   Add Layouts/Widgets to Main Layout
-        layout.addWidget(tableview)
-        layout.addLayout(hboxview)
+        create_layout.addWidget(tableview)
+        create_layout.addLayout(hboxview)
+
+        create_pane.setLayout(create_layout)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(tabbed_pane)
+
         self.parent.setLayout(layout)
 
         #   Signal Handling
@@ -2401,7 +2736,7 @@ class ClamAVSigCreatorPlugin(plugin_t):
     def init(self):
         global clamav_sig_creator_plugin
 
-        file_type = IDAW.GetCharPrm(INF_FILETYPE)
+        file_type = IDAW.GetCharPrm(idc.INF_FILETYPE)
 
         #   Currently only supports intel_x86
         if get_file_type() not in [1, 6, 9]:
